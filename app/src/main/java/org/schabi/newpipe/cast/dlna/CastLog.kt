@@ -31,6 +31,9 @@ object CastLog {
     /** Long payloads (XML documents) are truncated to this many characters. */
     const val MAX_ENTRY_LENGTH = 8000
 
+    /** Size of the log copied to be pasted in a message. */
+    const val SHARE_LENGTH = 20_000
+
     private val entries = ArrayDeque<String>()
     private val timeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
@@ -65,6 +68,22 @@ object CastLog {
     /** @return the whole log, oldest entries first, ready to be copied to the clipboard */
     @Synchronized
     fun dump(): String = entries.joinToString("\n")
+
+    /**
+     * @return the newest entries, oldest first, at most [maxChars] characters: what is pasted in
+     * a message is often cut, and the end is what tells what went wrong
+     */
+    @Synchronized
+    fun dumpRecent(maxChars: Int = SHARE_LENGTH): String {
+        val recent = ArrayList<String>()
+        var length = 0
+        for (entry in entries.descendingIterator()) {
+            if (recent.isNotEmpty() && length + entry.length + 1 > maxChars) break
+            recent.add(entry)
+            length += entry.length + 1
+        }
+        return recent.asReversed().joinToString("\n")
+    }
 
     @Synchronized
     fun size(): Int = entries.size

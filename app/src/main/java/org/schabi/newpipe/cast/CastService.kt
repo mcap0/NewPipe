@@ -455,9 +455,11 @@ class CastService : Service() {
                 CastLog.w("Could not read the formats supported by the TV: ${e.message}")
                 null
             }
+            // only the MIME types, with how many profiles each: the whole list is very long
+            val formats = TsFormat.parse(sinkProtocolInfo).groupBy({ it.first }, { it.second })
             CastLog.d(
-                "Video formats declared by the TV:\n" +
-                    TsFormat.parse(sinkProtocolInfo).joinToString("\n") { (mime, profile) -> "$mime ${profile ?: "*"}" }
+                "Video formats declared by the TV: " +
+                    formats.entries.joinToString { (mime, profiles) -> "$mime (${profiles.count { it != null }} profiles)" }
             )
         }
         return sinkProtocolInfo

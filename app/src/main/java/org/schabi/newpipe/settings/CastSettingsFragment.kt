@@ -43,7 +43,7 @@ class CastSettingsFragment : BasePreferenceFragment() {
         AlertDialog.Builder(context)
             .setTitle(R.string.cast_log_title)
             .setView(ScrollView(context).apply { addView(text) })
-            .setPositiveButton(R.string.cast_copy_log) { _, _ -> ShareUtils.copyToClipboard(context, log) }
+            .setPositiveButton(R.string.cast_copy_log) { _, _ -> ShareUtils.copyToClipboard(context, CastLog.dumpRecent()) }
             .setNeutralButton(R.string.cast_clear_log) { _, _ -> CastLog.clear() }
             .setNegativeButton(R.string.cancel, null)
             .show()

@@ -57,7 +57,7 @@ class CastControllerActivity : AppCompatActivity() {
         binding.castQuality.setOnClickListener { chooseQuality() }
         binding.castAudioTrack.setOnClickListener { chooseAudioTrack() }
         binding.castSubtitles.setOnClickListener { chooseSubtitles() }
-        binding.castCopyLog.setOnClickListener { ShareUtils.copyToClipboard(this, CastLog.dump()) }
+        binding.castCopyLog.setOnClickListener { ShareUtils.copyToClipboard(this, CastLog.dumpRecent()) }
         binding.castSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
                 if (fromUser) {

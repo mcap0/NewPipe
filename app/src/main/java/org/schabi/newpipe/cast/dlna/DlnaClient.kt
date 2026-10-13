@@ -133,7 +133,9 @@ class DlnaClient(private val device: DlnaDevice) {
     ): Map<String, String> {
         val envelope = Soap.buildEnvelope(serviceType, action, arguments)
         if (logAnswer) {
-            CastLog.d("SOAP -> $action @ $controlUrl\n$envelope")
+            // one line, with the arguments: the full envelopes made the log too long to share
+            val details = arguments.filter { it != INSTANCE_ID }.joinToString(", ") { (name, value) -> "$name=$value" }
+            CastLog.d("SOAP -> $action" + if (details.isNotEmpty()) " ($details)" else "")
         }
         try {
             val response = LanHttp.request(
@@ -148,8 +150,10 @@ class DlnaClient(private val device: DlnaDevice) {
                 readTimeoutMillis = readTimeoutMillis
             )
             val body = response.bodyAsString()
-            if (logAnswer || !response.isSuccessful) {
+            if (!response.isSuccessful) {
                 CastLog.d("SOAP <- $action HTTP ${response.code}\n$body")
+            } else if (logAnswer) {
+                CastLog.d("SOAP <- $action HTTP ${response.code}")
             }
             return Soap.parseResponse(action, response.code, body)
         } catch (e: UpnpException) {

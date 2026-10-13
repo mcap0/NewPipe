@@ -209,8 +209,8 @@ class CastProxyServer(
      */
     internal fun handle(request: HttpRequest, clientAddress: String?, output: OutputStream) {
         CastLog.d(
-            "Proxy <- ${request.method} ${request.path} from $clientAddress\n" +
-                request.headers.entries.joinToString("\n") { "${it.key}: ${it.value}" }
+            "Proxy <- ${request.method} ${request.path} from $clientAddress" +
+                (request.header("Range")?.let { " (Range: $it)" } ?: "")
         )
         if (request.method != "GET" && request.method != "HEAD") {
             writeSimple(output, 405, "Method Not Allowed", "Allow: GET, HEAD\r\n")
@@ -335,7 +335,7 @@ class CastProxyServer(
             "Server: $SERVER\r\n" +
             "Connection: close\r\n" +
             "\r\n"
-        CastLog.d("Proxy -> ${headers.trim()}")
+        CastLog.d("Proxy -> 200 OK, live stream $contentType")
         output.write(headers.toByteArray(StandardCharsets.ISO_8859_1))
     }
 
@@ -364,7 +364,7 @@ class CastProxyServer(
             .append("Server: ").append(SERVER).append("\r\n")
             .append("Connection: close\r\n")
             .append("\r\n")
-        CastLog.d("Proxy -> ${headers.toString().trim()}")
+        CastLog.d("Proxy -> $code $reason, $contentType, length $contentLength" + (contentRange?.let { ", $it" } ?: ""))
         output.write(headers.toString().toByteArray(StandardCharsets.ISO_8859_1))
     }
 

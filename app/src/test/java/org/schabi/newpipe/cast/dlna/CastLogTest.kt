@@ -38,4 +38,14 @@ class CastLogTest {
         assertTrue(dump.contains("E failed"))
         assertTrue(dump.contains("IllegalStateException: boom"))
     }
+
+    @Test
+    fun dumpRecentKeepsTheNewestEntries() {
+        CastLog.clear()
+        repeat(50) { CastLog.d("entry $it") }
+        val recent = CastLog.dumpRecent(200)
+        assertTrue(recent.length <= 200)
+        assertTrue(recent.endsWith("entry 49"))
+        assertFalse(recent.contains("entry 0\n"))
+    }
 }
