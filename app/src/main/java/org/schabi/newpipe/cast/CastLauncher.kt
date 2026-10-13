@@ -70,12 +70,12 @@ object CastLauncher {
         url = if (stream.isUrl) stream.content.orEmpty() else "",
         mimeType = stream.format?.mimeType,
         height = stream.height.takeIf { it > 0 }
-            ?: stream.resolution.substringBefore('p').toIntOrNull()
+            ?: stream.getResolution().substringBefore('p').toIntOrNull()
             ?: 0,
-        isVideoOnly = stream.isVideoOnly,
+        isVideoOnly = stream.isVideoOnly(),
         isProgressiveHttp = stream.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP
     )
 
-    private fun describe(stream: VideoStream) = "${stream.resolution} ${stream.format?.mimeType} ${stream.deliveryMethod}" +
-        if (stream.isVideoOnly) " video-only" else ""
+    private fun describe(stream: VideoStream) = "${stream.getResolution()} ${stream.format?.mimeType} ${stream.deliveryMethod}" +
+        if (stream.isVideoOnly()) " video-only" else ""
 }
