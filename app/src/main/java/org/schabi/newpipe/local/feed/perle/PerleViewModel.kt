@@ -33,6 +33,10 @@ class PerleViewModel(context: Context, groupId: Long) : ViewModel() {
 
     private var cache: PerleCache? = null
     private var disposable: Disposable? = null
+
+    // identifies the current load, so that late progress updates of a finished or replaced load
+    // are ignored instead of hiding its result behind the progress bar
+    private var loadGeneration = 0
     private val saveDisposables = CompositeDisposable()
 
     // a single thread, so that hide and undo are saved in the order they happened
@@ -47,6 +51,7 @@ class PerleViewModel(context: Context, groupId: Long) : ViewModel() {
      */
     fun load(forceRefresh: Boolean) {
         disposable?.dispose()
+        val generation = ++loadGeneration
         mutableState.value = PerleState.Loading(0, 0)
 
         val loadedGroupId = groupId
@@ -57,7 +62,7 @@ class PerleViewModel(context: Context, groupId: Long) : ViewModel() {
                     Single.just(cached)
                 } else {
                     repository.fetch(loadedGroupId) { done, total ->
-                        mutableState.postValue(PerleState.Loading(done, total))
+                        postProgress(generation, done, total)
                     }
                 }
             }
@@ -68,6 +73,18 @@ class PerleViewModel(context: Context, groupId: Long) : ViewModel() {
             .subscribeOn(Schedulers.io())
             .observeOn(AndroidSchedulers.mainThread())
             .subscribe({ mutableState.value = it }, { mutableState.value = PerleState.Error(it) })
+    }
+
+    /**
+     * Shows the progress on the main thread, but only while [generation] is still loading: the
+     * last progress update can arrive after the result, which must not be replaced.
+     */
+    private fun postProgress(generation: Int, done: Int, total: Int) {
+        AndroidSchedulers.mainThread().scheduleDirect {
+            if (generation == loadGeneration && mutableState.value is PerleState.Loading) {
+                mutableState.value = PerleState.Loading(done, total)
+            }
+        }
     }
 
     /**

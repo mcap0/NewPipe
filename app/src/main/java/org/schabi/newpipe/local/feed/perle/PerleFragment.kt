@@ -12,6 +12,7 @@ import android.view.MenuInflater
 import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
+import androidx.appcompat.app.ActionBar
 import androidx.appcompat.app.AlertDialog
 import androidx.core.os.bundleOf
 import androidx.core.view.isVisible
@@ -61,6 +62,9 @@ class PerleFragment : BaseFragment() {
     private var groupId = FeedGroupEntity.GROUP_ALL_ID
     private var groupName = ""
 
+    /** The subtitle this fragment put in the action bar, to remove only that one. */
+    private var shownSubtitle: CharSequence? = null
+
     init {
         setHasOptionsMenu(true)
     }
@@ -108,9 +112,11 @@ class PerleFragment : BaseFragment() {
 
     override fun onCreateOptionsMenu(menu: Menu, inflater: MenuInflater) {
         super.onCreateOptionsMenu(menu, inflater)
-        activity.supportActionBar?.setDisplayShowTitleEnabled(true)
-        activity.supportActionBar?.setTitle(R.string.perle_title)
-        activity.supportActionBar?.subtitle = subtitle()
+        activity?.supportActionBar?.let { actionBar ->
+            actionBar.setDisplayShowTitleEnabled(true)
+            actionBar.setTitle(R.string.perle_title)
+            showSubtitle(actionBar)
+        }
         inflater.inflate(R.menu.menu_perle_fragment, menu)
     }
 
@@ -142,12 +148,19 @@ class PerleFragment : BaseFragment() {
 
     override fun onDestroyOptionsMenu() {
         super.onDestroyOptionsMenu()
-        if (activity?.supportActionBar?.subtitle == subtitle()) {
-            activity?.supportActionBar?.subtitle = null
+        // this can be called when the fragment is no longer attached, so no resources are used
+        val actionBar = activity?.supportActionBar
+        if (actionBar != null && shownSubtitle != null && actionBar.subtitle == shownSubtitle) {
+            actionBar.subtitle = null
         }
+        shownSubtitle = null
     }
 
-    private fun subtitle(): String = groupName.ifEmpty { getString(R.string.perle_all_subscriptions) }
+    private fun showSubtitle(actionBar: ActionBar) {
+        val subtitle = groupName.ifEmpty { getString(R.string.perle_all_subscriptions) }
+        actionBar.subtitle = subtitle
+        shownSubtitle = subtitle
+    }
 
     /**
      * Lets the user choose which folder (feed group) Perle shows, or all the subscriptions.
@@ -178,7 +191,9 @@ class PerleFragment : BaseFragment() {
         groupName = newGroupName
         // so that the same folder is shown after the fragment is recreated
         arguments = bundleOf(KEY_GROUP_ID to groupId, KEY_GROUP_NAME to groupName)
-        activity?.supportActionBar?.subtitle = subtitle()
+        if (isAdded) {
+            activity?.supportActionBar?.let(::showSubtitle)
+        }
         viewModel.selectGroup(groupId)
     }
 
