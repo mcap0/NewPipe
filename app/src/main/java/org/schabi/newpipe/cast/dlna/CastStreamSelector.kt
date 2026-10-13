@@ -74,8 +74,7 @@ object CastStreamSelector {
     /**
      * @param maxHeight the highest resolution wanted, at most [MAX_HEIGHT]
      */
-    fun select(candidates: List<CastStreamCandidate>, maxHeight: Int = MAX_HEIGHT): CastStreamCandidate? =
-        usableProgressive(candidates).filter { it.height <= minOf(maxHeight, MAX_HEIGHT) }.maxByOrNull { it.height }
+    fun select(candidates: List<CastStreamCandidate>, maxHeight: Int = MAX_HEIGHT): CastStreamCandidate? = usableProgressive(candidates).filter { it.height <= minOf(maxHeight, MAX_HEIGHT) }.maxByOrNull { it.height }
 
     /**
      * Chooses a video-only H.264 MP4 stream up to [MAX_DASH_HEIGHT] and an AAC M4A stream
