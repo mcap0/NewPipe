@@ -7,6 +7,7 @@ package org.schabi.newpipe.local.feed.perle
 
 import android.content.Context
 import android.util.Log
+import androidx.core.content.edit
 import io.reactivex.rxjava3.core.Flowable
 import io.reactivex.rxjava3.core.Maybe
 import io.reactivex.rxjava3.core.Single
@@ -37,6 +38,7 @@ class PerleRepository(context: Context) {
     private val appContext = context.applicationContext
     private val database = NewPipeDatabase.getInstance(appContext)
     private val cacheDir = File(appContext.filesDir, CACHE_DIR)
+    private val preferences = appContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
 
     fun readCache(groupId: Long): PerleCache? {
         return try {
@@ -93,6 +95,23 @@ class PerleRepository(context: Context) {
     fun watchedUrls(): Set<String> {
         return database.streamHistoryDAO().historySortedById.blockingFirst()
             .mapTo(HashSet()) { it.streamEntity.url }
+    }
+
+    /**
+     * @return the urls of the videos the user chose not to see again in Perle
+     */
+    fun hiddenUrls(): Set<String> {
+        return preferences.getStringSet(KEY_HIDDEN_URLS, null).orEmpty()
+    }
+
+    fun setHidden(url: String, hidden: Boolean) {
+        val urls = hiddenUrls().toMutableSet()
+        if (hidden) urls.add(url) else urls.remove(url)
+        preferences.edit { putStringSet(KEY_HIDDEN_URLS, urls) }
+    }
+
+    fun clearHidden() {
+        preferences.edit { remove(KEY_HIDDEN_URLS) }
     }
 
     private fun subscriptionsFor(groupId: Long): List<SubscriptionEntity> {
@@ -164,6 +183,8 @@ class PerleRepository(context: Context) {
     companion object {
         private const val TAG = "PerleRepository"
         private const val CACHE_DIR = "perle"
+        private const val PREFERENCES_NAME = "perle"
+        private const val KEY_HIDDEN_URLS = "hidden_urls"
         private const val POPULAR_SORT = "popular"
         const val MAX_CONCURRENT_CHANNELS = 4
         const val MAX_PAGES_PER_CHANNEL = 5

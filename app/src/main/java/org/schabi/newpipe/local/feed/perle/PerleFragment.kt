@@ -17,6 +17,7 @@ import androidx.core.view.isVisible
 import androidx.fragment.app.FragmentManager
 import androidx.lifecycle.ViewModelProvider
 import androidx.recyclerview.widget.GridLayoutManager
+import com.google.android.material.snackbar.Snackbar
 import com.xwray.groupie.GroupieAdapter
 import com.xwray.groupie.Item
 import com.xwray.groupie.OnItemClickListener
@@ -28,12 +29,14 @@ import org.schabi.newpipe.BaseFragment
 import org.schabi.newpipe.R
 import org.schabi.newpipe.database.feed.model.FeedGroupEntity
 import org.schabi.newpipe.database.stream.StreamWithState
+import org.schabi.newpipe.database.stream.model.StreamEntity
 import org.schabi.newpipe.databinding.FragmentPerleBinding
 import org.schabi.newpipe.error.ErrorInfo
 import org.schabi.newpipe.error.ErrorUtil
 import org.schabi.newpipe.error.UserAction
 import org.schabi.newpipe.info_list.ItemViewMode
 import org.schabi.newpipe.info_list.dialog.InfoItemDialog
+import org.schabi.newpipe.info_list.dialog.StreamDialogEntry
 import org.schabi.newpipe.local.feed.item.StreamItem
 import org.schabi.newpipe.util.Localization
 import org.schabi.newpipe.util.NavigationHelper
@@ -119,6 +122,11 @@ class PerleFragment : BaseFragment() {
                 true
             }
 
+            R.id.menu_item_perle_show_hidden -> {
+                viewModel.clearHidden()
+                true
+            }
+
             else -> super.onOptionsItemSelected(item)
         }
     }
@@ -171,7 +179,9 @@ class PerleFragment : BaseFragment() {
         groupAdapter.update(
             state.items.map { StreamItem(StreamWithState(it, null), itemVersion) }
         )
-        binding.perleItemsList.scrollToPosition(0)
+        if (state.scrollToTop) {
+            binding.perleItemsList.scrollToPosition(0)
+        }
 
         val updated = Localization.relativeTime(
             OffsetDateTime.ofInstant(Instant.ofEpochMilli(state.timestamp), ZoneId.systemDefault())
@@ -205,13 +215,21 @@ class PerleFragment : BaseFragment() {
             if (item !is StreamItem || context == null || activity == null) {
                 return false
             }
-            InfoItemDialog.Builder(
-                activity,
-                context,
-                this@PerleFragment,
-                item.streamWithState.stream.toStreamInfoItem()
-            ).create().show()
+            val stream = item.streamWithState.stream
+            InfoItemDialog.Builder(activity, context, this@PerleFragment, stream.toStreamInfoItem())
+                .addEntry(StreamDialogEntry(R.string.perle_hide) { _, _ -> hide(stream) })
+                .create()
+                .show()
             return true
+        }
+    }
+
+    private fun hide(stream: StreamEntity) {
+        val position = viewModel.hide(stream)
+        if (position >= 0) {
+            Snackbar.make(binding.root, R.string.perle_hidden, Snackbar.LENGTH_LONG)
+                .setAction(R.string.perle_undo) { viewModel.unhide(stream, position) }
+                .show()
         }
     }
 

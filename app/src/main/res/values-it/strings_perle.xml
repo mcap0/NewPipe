@@ -8,4 +8,8 @@
     <string name="perle_empty">Nessun video trovato. Prova ad aggiornare, o controlla che il gruppo contenga dei canali.</string>
     <string name="perle_info">Aggiornato %1$s</string>
     <string name="perle_info_failed">Aggiornato %1$s · canali saltati per errori: %2$d</string>
+    <string name="perle_hide">Non mostrare</string>
+    <string name="perle_hidden">Questo video non verrà più mostrato in Perle</string>
+    <string name="perle_undo">Annulla</string>
+    <string name="perle_show_hidden">Mostra di nuovo i video nascosti</string>
 </resources>

@@ -13,4 +13,9 @@
         android:icon="@drawable/ic_refresh"
         android:title="@string/perle_refresh"
         app:showAsAction="ifRoom" />
+
+    <item
+        android:id="@+id/menu_item_perle_show_hidden"
+        android:title="@string/perle_show_hidden"
+        app:showAsAction="never" />
 </menu>
