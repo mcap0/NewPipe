@@ -32,6 +32,7 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import org.schabi.newpipe.BuildConfig
 import org.schabi.newpipe.DownloaderImpl
 import org.schabi.newpipe.R
 import org.schabi.newpipe.cast.dlna.CastChoice
@@ -263,7 +264,10 @@ class CastService : Service() {
     private fun startSession(device: DlnaDevice, item: CastItem) {
         endSession(keepState = true)
         val session = ++sessionId
-        CastLog.d("Starting session #$session on \"${device.friendlyName}\" for \"${item.title}\"")
+        CastLog.d(
+            "Starting session #$session on \"${device.friendlyName}\" for \"${item.title}\" " +
+                "(app ${BuildConfig.VERSION_NAME}, Android ${Build.VERSION.RELEASE})"
+        )
         acquireLocks()
 
         this.device = device
@@ -345,11 +349,7 @@ class CastService : Service() {
 
         val castMedia = prepareMedia(media, dlna, server, start)
         try {
-            // Some TVs refuse a new URI while they are playing something else
-            val state = runCatching { dlna.getTransportInfo() }.getOrNull()
-            if (state == TransportState.PLAYING || state == TransportState.PAUSED || state == TransportState.TRANSITIONING) {
-                runCatching { dlna.stop() }
-            }
+            stopIfBusy(dlna)
             setUriWithRetries(dlna, castMedia)
             playWithRetries(dlna)
         } catch (e: UpnpException) {
@@ -372,6 +372,29 @@ class CastService : Service() {
         lastLoggedTransport = null
         publish(currentState.copy(status = CastStatus.BUFFERING))
         return true
+    }
+
+    /**
+     * Some TVs refuse a new URI while they are playing something else, or accept it and then
+     * never start it: stop the TV and wait until it says it stopped.
+     */
+    private fun stopIfBusy(dlna: DlnaClient) {
+        val state = runCatching { dlna.getTransportInfo() }.getOrNull()
+        if (state != TransportState.PLAYING && state != TransportState.PAUSED && state != TransportState.TRANSITIONING) {
+            return
+        }
+        val started = System.currentTimeMillis()
+        runCatching { dlna.stop() }
+        var now = state
+        repeat(STOP_WAIT_POLLS) {
+            now = runCatching { dlna.getTransportInfo() }.getOrNull()
+            if (now == TransportState.STOPPED || now == TransportState.NO_MEDIA) {
+                CastLog.d("The TV stopped ($state -> $now) in ${System.currentTimeMillis() - started} ms")
+                return
+            }
+            Thread.sleep(STOP_WAIT_MILLIS)
+        }
+        CastLog.w("The TV is still $now ${System.currentTimeMillis() - started} ms after Stop")
     }
 
     /**
@@ -719,6 +742,7 @@ class CastService : Service() {
         if (liveMedia != null) {
             // a live stream cannot be seeked: the TV gets a new one starting at that time
             try {
+                stopIfBusy(dlna)
                 setUriWithRetries(dlna, liveMediaAt(positionSeconds, server))
                 playWithRetries(dlna)
                 playRequestedAt = System.currentTimeMillis()
@@ -1001,6 +1025,8 @@ class CastService : Service() {
 
         private const val ERROR_TRANSITION_NOT_AVAILABLE = 701
         private const val PLAY_ATTEMPTS = 4
+        private const val STOP_WAIT_POLLS = 10
+        private const val STOP_WAIT_MILLIS = 300L
         private const val STOPPED_POLLS_BEFORE_END = 3
         private const val START_TIMEOUT_MILLIS = 25_000L
         private const val STOPPED_GRACE_MILLIS = 5_000L

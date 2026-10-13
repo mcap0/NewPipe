@@ -61,7 +61,10 @@ class LiveTsMuxer(private val upstream: Upstream, private val tracks: CastDash) 
         val base = videoSegment.startSeconds
         CastLog.d(
             "TS mux from ${"%.1f".format(base)} s (asked ${"%.1f".format(startSeconds)} s): " +
-                "video at byte ${videoSegment.offset}, audio at byte ${audioSegment.offset}"
+                "video at byte ${videoSegment.offset}, audio at byte ${audioSegment.offset}; " +
+                "video segment ${videoInput.segments.indexOf(videoSegment) + 1}/${videoInput.segments.size} " +
+                "of ${"%.1f".format(videoSegment.durationSeconds)} s, first segments: " +
+                videoInput.segments.take(LOGGED_SEGMENTS).joinToString { "%.1f".format(it.durationSeconds) } + " s"
         )
 
         RangedInputStream(upstream, videoInput.url, videoSegment.offset).use { videoStream ->
@@ -98,12 +101,17 @@ class LiveTsMuxer(private val upstream: Upstream, private val tracks: CastDash) 
         val aac = audio.track.codec as CodecConfig.Aac
         fun clock(seconds: Double) = ((seconds - baseSeconds) * TsWriter.CLOCK).roundToLong() + START_DELAY
 
+        // like ffmpeg: service description and program tables first, then again every 500 and
+        // 100 ms, so that a player can start anywhere and finds them quickly
+        writer.writeSdt()
         writer.writeTables()
         // MP4 files hide the B-frame delay of the first frame with an edit list: without it,
         // the video would be late compared to the audio
         val videoShift = video.peek()?.let { video.seconds(it.compositionOffset.toLong()) } ?: 0.0
         val firstVideo = video.peek()
         val firstAudio = audio.peek()
+        var lastSdt = firstVideo?.let { clock(video.seconds(it.decodeTime) - videoShift) } ?: 0L
+        var lastTables = lastSdt
         CastLog.d(
             "Mux start: base ${"%.3f".format(baseSeconds)} s, first video sample at " +
                 (firstVideo?.let { "${"%.3f".format(video.seconds(it.decodeTime))} s (+${"%.3f".format(videoShift)} s)" } ?: "none") +
@@ -115,6 +123,7 @@ class LiveTsMuxer(private val upstream: Upstream, private val tracks: CastDash) 
         var videoFrames = 0L
         var audioFrames = 0L
         var skippedAudio = 0L
+        var reorderedFrames = 0L
         while (true) {
             val videoSample = video.peek()
             val audioSample = audio.peek()
@@ -128,14 +137,29 @@ class LiveTsMuxer(private val upstream: Upstream, private val tracks: CastDash) 
                 val dts = clock(videoTime)
                 val pts = clock(video.seconds(sample.decodeTime + sample.compositionOffset) - videoShift)
                 val (annexB, isKeyframe) = toAnnexB(sample.data, avc)
+                val pcr = (dts - PCR_DELAY).coerceAtLeast(0)
+                val inputTypes = nalTypes(sample.data, avc)
+                if (isReordered(inputTypes)) {
+                    reorderedFrames++
+                    if (reorderedFrames <= LOGGED_REORDERS) {
+                        CastLog.d("Mux frame $videoFrames at ${"%.2f".format(videoTime - baseSeconds)} s: NAL types $inputTypes, sent ${sentNalTypes(annexB)}")
+                    }
+                }
                 if (videoFrames == 0L) {
                     CastLog.d(
-                        "Mux first video frame: keyframe $isKeyframe, NAL types ${nalTypes(sample.data, avc)}, " +
-                            "PTS $pts, DTS $dts, PCR ${(dts - START_DELAY).coerceAtLeast(0)}, $skippedAudio audio frames skipped"
+                        "Mux first video frame: keyframe $isKeyframe, NAL types $inputTypes, sent ${sentNalTypes(annexB)}, " +
+                            "PTS $pts, DTS $dts, PCR $pcr, $skippedAudio audio frames skipped"
                     )
                 }
-                if (isKeyframe) writer.writeTables()
-                writer.writeVideo(annexB, pts, dts, isKeyframe, (dts - START_DELAY).coerceAtLeast(0))
+                if (dts - lastSdt >= SDT_INTERVAL) {
+                    writer.writeSdt()
+                    lastSdt = dts
+                }
+                if (isKeyframe || dts - lastTables >= TABLES_INTERVAL) {
+                    writer.writeTables()
+                    lastTables = dts
+                }
+                writer.writeVideo(annexB, pts, dts, isKeyframe, pcr)
                 writer.flush()
                 videoFrames++
                 val sent = videoTime - baseSeconds
@@ -143,7 +167,8 @@ class LiveTsMuxer(private val upstream: Upstream, private val tracks: CastDash) 
                     nextReport += PROGRESS_SECONDS
                     CastLog.d(
                         "Mux progress: ${sent.toLong()} s of video, $videoFrames video and $audioFrames audio frames, " +
-                            "${output.count / 1024} KB sent in ${(System.currentTimeMillis() - startedAt) / 1000} s"
+                            "${output.count / 1024} KB sent in ${(System.currentTimeMillis() - startedAt) / 1000} s" +
+                            if (reorderedFrames > 0) ", $reorderedFrames frames reordered" else ""
                     )
                 }
             } else {
@@ -183,8 +208,22 @@ class LiveTsMuxer(private val upstream: Upstream, private val tracks: CastDash) 
     }
 
     companion object {
-        /** Like ffmpeg: timestamps start 0.7 s after the clock, room for B-frame reordering. */
-        const val START_DELAY = 63_000L
+        /**
+         * Like ffmpeg: the first frame is presented 1.4 s after the start of the clock and decoded
+         * [PCR_DELAY] after it arrives, so the clock reference starts above 0 and always grows,
+         * even when the first decode time is earlier than the first presentation time (B-frames).
+         */
+        const val START_DELAY = 126_000L
+
+        /** Time between the arrival of a frame (PCR) and its decoding (DTS): 0.7 s like ffmpeg. */
+        const val PCR_DELAY = 63_000L
+
+        /** How often the program tables and the service description are repeated, in 90 kHz units. */
+        private const val TABLES_INTERVAL = 9_000L
+        private const val SDT_INTERVAL = 45_000L
+
+        private const val LOGGED_SEGMENTS = 6
+        private const val LOGGED_REORDERS = 3
 
         /** How often the progress of the stream is logged, in seconds of video. */
         private const val PROGRESS_SECONDS = 10.0
@@ -250,6 +289,27 @@ class LiveTsMuxer(private val upstream: Upstream, private val tracks: CastDash) 
                 }
             }
             return out.toByteArray() to isKeyframe
+        }
+
+        /** @return true if a non-picture unit comes after a slice, which [toAnnexB] fixes */
+        fun isReordered(types: List<Int>): Boolean {
+            val firstSlice = types.indexOfFirst { it in NAL_SLICE..NAL_IDR }
+            return firstSlice >= 0 && types.drop(firstSlice + 1).any { it !in NAL_SLICE..NAL_IDR && it !in DROPPED_NALS }
+        }
+
+        /** @return the types of the NAL units of an Annex B access unit (4-byte start codes), for the log */
+        fun sentNalTypes(annexB: ByteArray): List<Int> {
+            val types = ArrayList<Int>()
+            var i = 0
+            while (i + 4 < annexB.size) {
+                if (annexB[i].toInt() == 0 && annexB[i + 1].toInt() == 0 && annexB[i + 2].toInt() == 0 && annexB[i + 3].toInt() == 1) {
+                    types.add(annexB[i + 4].toInt() and 0x1F)
+                    i += 4
+                } else {
+                    i++
+                }
+            }
+            return types
         }
 
         /** @return the types of the NAL units of an MP4 sample, for the log */

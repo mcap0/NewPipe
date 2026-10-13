@@ -54,7 +54,7 @@ jobs:
 
       # testDebugUnitTest also runs checkstyle and ktlint
       - name: Build APK and run checks
-        run: ./gradlew assembleContinuous testDebugUnitTest --stacktrace -DskipFormatKtlint
+        run: ./gradlew assembleContinuous testDebugUnitTest --stacktrace -DskipFormatKtlint "-DversionNameSuffix=-perle${{ github.run_number }}"
 
       - name: Rename APK
         run: |

@@ -16,6 +16,11 @@ class TsWriter(private val output: OutputStream) {
     private val continuity = HashMap<Int, Int>()
     private val packet = ByteArray(PACKET_SIZE)
 
+    /** Writes the service description table (DVB), which some players expect like ffmpeg sends it. */
+    fun writeSdt() {
+        writeSection(SDT_PID, sdt())
+    }
+
     /** Writes the program tables, needed by players to find the streams. */
     fun writeTables() {
         writeSection(PAT_PID, pat())
@@ -152,10 +157,36 @@ class TsWriter(private val output: OutputStream) {
         )
     )
 
+    private fun sdt(): ByteArray {
+        val provider = SERVICE_PROVIDER.toByteArray(Charsets.US_ASCII)
+        val name = SERVICE_NAME.toByteArray(Charsets.US_ASCII)
+        // service descriptor: digital television service, provider and service names
+        val descriptor = byteArrayOf(0x48, (3 + provider.size + name.size).toByte(), 0x01, provider.size.toByte()) +
+            provider + byteArrayOf(name.size.toByte()) + name
+        val sectionLength = 8 + 5 + descriptor.size + 4
+        return withCrc(
+            byteArrayOf(
+                0x42, // table id: SDT of this transport stream
+                (0xF0 or (sectionLength shr 8)).toByte(), sectionLength.toByte(),
+                0x00, 0x01, // transport stream id
+                0xC1.toByte(), // version 0, current
+                0x00, 0x00, // section numbers
+                0xFF.toByte(), 0x01, // original network id, as ffmpeg
+                0xFF.toByte(), // reserved
+                0x00, PROGRAM_NUMBER.toByte(), // service id
+                0xFC.toByte(), // no EIT
+                (0x80 or (descriptor.size shr 8)).toByte(), descriptor.size.toByte() // running, not scrambled
+            ) + descriptor
+        )
+    }
+
     companion object {
         const val PACKET_SIZE = 188
         const val SYNC_BYTE: Byte = 0x47
         const val PAT_PID = 0x0000
+        const val SDT_PID = 0x0011
+        private const val SERVICE_PROVIDER = "NewPipe"
+        private const val SERVICE_NAME = "NewPipe"
         const val PMT_PID = 0x1000
         const val VIDEO_PID = 0x0100
         const val AUDIO_PID = 0x0101
