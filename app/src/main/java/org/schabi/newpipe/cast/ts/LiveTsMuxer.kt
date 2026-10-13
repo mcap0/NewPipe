@@ -189,10 +189,17 @@ class LiveTsMuxer(private val upstream: Upstream, private val tracks: CastDash) 
         /** How often the progress of the stream is logged, in seconds of video. */
         private const val PROGRESS_SECONDS = 10.0
 
+        private const val NAL_SLICE = 1
         private const val NAL_IDR = 5
         private const val NAL_SPS = 7
         private const val NAL_PPS = 8
         private const val NAL_AUD = 9
+
+        /**
+         * Access unit delimiters (one is written already), end of sequence and stream (which
+         * would end the video for the decoder) and filler data.
+         */
+        private val DROPPED_NALS = setOf(NAL_AUD, 10, 11, 12)
         private val START_CODE = byteArrayOf(0, 0, 0, 1)
         private val ACCESS_UNIT_DELIMITER = byteArrayOf(0, 0, 0, 1, 0x09, 0xF0.toByte())
 
@@ -232,10 +239,14 @@ class LiveTsMuxer(private val upstream: Upstream, private val tracks: CastDash) 
                     }
                 }
             }
-            nals.forEachIndexed { i, nal ->
-                if (types[i] != NAL_AUD) {
+            // H.264 wants the SEI and other non-picture units before the slices of the picture:
+            // YouTube files sometimes have an SEI after them (e.g. in the first frame), which
+            // made TVs stall at the start of the video
+            val (slices, others) = nals.indices.partition { types[it] in NAL_SLICE..NAL_IDR }
+            for (i in others + slices) {
+                if (types[i] !in DROPPED_NALS) {
                     out.write(START_CODE)
-                    out.write(nal)
+                    out.write(nals[i])
                 }
             }
             return out.toByteArray() to isKeyframe
