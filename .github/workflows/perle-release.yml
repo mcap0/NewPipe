@@ -1,8 +1,13 @@
 name: "Publish NewPipe Perle APK"
 
-# Push a tag like `perle-v1` to build the APK and publish it in a GitHub Release.
+# Push a tag like `perle-v1`, or run this workflow manually giving the tag name,
+# to build the APK and publish it in a GitHub Release.
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag, e.g. perle-v2'
+        required: true
   push:
     tags:
       - 'perle-v*'
@@ -51,7 +56,7 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('perle-build-{0}', github.run_number) }}
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
         run: |
           gh release create "$TAG" app/build/outputs/apk/continuous/NewPipe-Perle.apk \
             --repo "$GITHUB_REPOSITORY" \
