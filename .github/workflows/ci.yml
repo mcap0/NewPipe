@@ -20,6 +20,7 @@ on:
     branches:
       - dev
       - master
+      - perle
     paths-ignore:
       - 'README.md'
       - 'doc/**'

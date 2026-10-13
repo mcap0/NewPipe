@@ -74,6 +74,7 @@ import org.schabi.newpipe.ktx.animate
 import org.schabi.newpipe.ktx.animateHideRecyclerViewAllowingScrolling
 import org.schabi.newpipe.ktx.slideUp
 import org.schabi.newpipe.local.feed.item.StreamItem
+import org.schabi.newpipe.local.feed.perle.PerleFragment
 import org.schabi.newpipe.local.feed.service.FeedLoadService
 import org.schabi.newpipe.local.subscription.SubscriptionManager
 import org.schabi.newpipe.util.DeviceUtils
@@ -237,6 +238,9 @@ class FeedFragment : BaseStateFragment<FeedState>() {
             return true
         } else if (item.itemId == R.id.menu_item_feed_toggle_played_items) {
             showStreamVisibilityDialog()
+        } else if (item.itemId == R.id.menu_item_feed_perle) {
+            PerleFragment.open(fm, groupId, groupName)
+            return true
         }
 
         return super.onOptionsItemSelected(item)

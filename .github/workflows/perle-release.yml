@@ -1,0 +1,61 @@
+name: "Publish NewPipe Perle APK"
+
+# Push a tag like `perle-v1` to build the APK and publish it in a GitHub Release.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'perle-v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write # needed to create the release
+
+    env:
+      PERLE_DEBUG_KEYSTORE: ${{ secrets.PERLE_DEBUG_KEYSTORE }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # the app id and name are derived from the branch name:
+      # `perle` gives `org.schabi.newpipe.continuous.perle` and "NewPipe Perle"
+      - name: create and checkout perle branch
+        run: git checkout -B perle
+
+      - name: set up JDK
+        uses: actions/setup-java@v5
+        with:
+          java-version: 21
+          distribution: "temurin"
+          cache: 'gradle'
+
+      # Optional: a stable signing key, so that new versions install over old ones.
+      # Without the secret a new debug key is generated on every run.
+      - name: restore signing key
+        if: env.PERLE_DEBUG_KEYSTORE != ''
+        run: |
+          mkdir -p ~/.android
+          echo "$PERLE_DEBUG_KEYSTORE" | base64 -d > ~/.android/debug.keystore
+
+      - name: Build APK
+        run: ./gradlew assembleContinuous --stacktrace -DskipFormatKtlint
+
+      - name: Rename APK
+        run: |
+          # assume there is only one APK in that folder
+          mv app/build/outputs/apk/continuous/*.apk app/build/outputs/apk/continuous/NewPipe-Perle.apk
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('perle-build-{0}', github.run_number) }}
+        run: |
+          gh release create "$TAG" app/build/outputs/apk/continuous/NewPipe-Perle.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "NewPipe Perle ($TAG)" \
+            --notes "APK of NewPipe Perle, installs next to the official NewPipe (app id org.schabi.newpipe.continuous.perle)." \
+            --latest

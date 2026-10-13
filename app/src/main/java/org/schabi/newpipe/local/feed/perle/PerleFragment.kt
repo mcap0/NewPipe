@@ -1,0 +1,238 @@
+/*
+ * SPDX-FileCopyrightText: 2026 NewPipe contributors <https://newpipe.net>
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+package org.schabi.newpipe.local.feed.perle
+
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.Menu
+import android.view.MenuInflater
+import android.view.MenuItem
+import android.view.View
+import android.view.ViewGroup
+import androidx.core.os.bundleOf
+import androidx.core.view.isVisible
+import androidx.fragment.app.FragmentManager
+import androidx.lifecycle.ViewModelProvider
+import androidx.recyclerview.widget.GridLayoutManager
+import com.xwray.groupie.GroupieAdapter
+import com.xwray.groupie.Item
+import com.xwray.groupie.OnItemClickListener
+import com.xwray.groupie.OnItemLongClickListener
+import java.time.Instant
+import java.time.OffsetDateTime
+import java.time.ZoneId
+import org.schabi.newpipe.BaseFragment
+import org.schabi.newpipe.R
+import org.schabi.newpipe.database.feed.model.FeedGroupEntity
+import org.schabi.newpipe.database.stream.StreamWithState
+import org.schabi.newpipe.databinding.FragmentPerleBinding
+import org.schabi.newpipe.error.ErrorInfo
+import org.schabi.newpipe.error.ErrorUtil
+import org.schabi.newpipe.error.UserAction
+import org.schabi.newpipe.info_list.ItemViewMode
+import org.schabi.newpipe.info_list.dialog.InfoItemDialog
+import org.schabi.newpipe.local.feed.item.StreamItem
+import org.schabi.newpipe.util.Localization
+import org.schabi.newpipe.util.NavigationHelper
+import org.schabi.newpipe.util.ThemeHelper.getGridSpanCountStreams
+import org.schabi.newpipe.util.ThemeHelper.getItemViewMode
+import org.schabi.newpipe.util.ThemeHelper.shouldUseGridLayout
+
+/**
+ * Shows the most viewed videos of the channels in a feed group, giving the same weight to
+ * every channel, so that channels which rarely upload are not buried in the feed.
+ */
+class PerleFragment : BaseFragment() {
+    private var _binding: FragmentPerleBinding? = null
+    private val binding get() = _binding!!
+
+    private lateinit var viewModel: PerleViewModel
+    private lateinit var groupAdapter: GroupieAdapter
+
+    private var groupId = FeedGroupEntity.GROUP_ALL_ID
+    private var groupName = ""
+
+    init {
+        setHasOptionsMenu(true)
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        groupId = arguments?.getLong(KEY_GROUP_ID, FeedGroupEntity.GROUP_ALL_ID)
+            ?: FeedGroupEntity.GROUP_ALL_ID
+        groupName = arguments?.getString(KEY_GROUP_NAME) ?: ""
+    }
+
+    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
+        return inflater.inflate(R.layout.fragment_perle, container, false)
+    }
+
+    override fun onViewCreated(rootView: View, savedInstanceState: Bundle?) {
+        _binding = FragmentPerleBinding.bind(rootView)
+        super.onViewCreated(rootView, savedInstanceState)
+
+        groupAdapter = GroupieAdapter().apply {
+            setOnItemClickListener(listenerStreamItem)
+            setOnItemLongClickListener(listenerStreamItem)
+            spanCount = if (shouldUseGridLayout(context)) getGridSpanCountStreams(context) else 1
+        }
+        binding.perleItemsList.layoutManager = GridLayoutManager(requireContext(), groupAdapter.spanCount).apply {
+            spanSizeLookup = groupAdapter.spanSizeLookup
+        }
+        binding.perleItemsList.adapter = groupAdapter
+
+        val factory = PerleViewModel.getFactory(requireContext(), groupId)
+        viewModel = ViewModelProvider(this, factory)[PerleViewModel::class.java]
+        viewModel.stateLiveData.observe(viewLifecycleOwner) { it?.let(::handleState) }
+    }
+
+    override fun onDestroyView() {
+        binding.perleItemsList.adapter = null
+        _binding = null
+        super.onDestroyView()
+    }
+
+    // /////////////////////////////////////////////////////////////////////////
+    // Menu
+    // /////////////////////////////////////////////////////////////////////////
+
+    override fun onCreateOptionsMenu(menu: Menu, inflater: MenuInflater) {
+        super.onCreateOptionsMenu(menu, inflater)
+        activity.supportActionBar?.setDisplayShowTitleEnabled(true)
+        activity.supportActionBar?.setTitle(R.string.perle_title)
+        activity.supportActionBar?.subtitle = groupName
+        inflater.inflate(R.menu.menu_perle_fragment, menu)
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        return when (item.itemId) {
+            R.id.menu_item_perle_shuffle -> {
+                viewModel.shuffle()
+                true
+            }
+
+            R.id.menu_item_perle_refresh -> {
+                viewModel.load(forceRefresh = true)
+                true
+            }
+
+            else -> super.onOptionsItemSelected(item)
+        }
+    }
+
+    override fun onDestroyOptionsMenu() {
+        super.onDestroyOptionsMenu()
+        if (groupName != "" && activity?.supportActionBar?.subtitle == groupName) {
+            activity?.supportActionBar?.subtitle = null
+        }
+    }
+
+    // /////////////////////////////////////////////////////////////////////////
+    // State handling
+    // /////////////////////////////////////////////////////////////////////////
+
+    private fun handleState(state: PerleState) {
+        binding.perleLoadingView.isVisible = state is PerleState.Loading
+        binding.perleItemsList.isVisible = state is PerleState.Loaded && state.items.isNotEmpty()
+        binding.perleEmptyText.isVisible =
+            (state is PerleState.Loaded && state.items.isEmpty()) || state is PerleState.Error
+        binding.perleInfoText.isVisible = state is PerleState.Loaded
+
+        when (state) {
+            is PerleState.Loading -> {
+                binding.perleProgressBar.isIndeterminate = state.total <= 0
+                binding.perleProgressBar.max = state.total
+                binding.perleProgressBar.progress = state.done
+                binding.perleProgressText.text = if (state.total > 0) {
+                    getString(R.string.perle_progress, state.done, state.total)
+                } else {
+                    getString(R.string.perle_loading)
+                }
+            }
+
+            is PerleState.Loaded -> handleLoaded(state)
+
+            is PerleState.Error -> ErrorUtil.showSnackbar(
+                this,
+                ErrorInfo(state.error, UserAction.REQUESTED_FEED, "Loading Perle")
+            )
+        }
+    }
+
+    private fun handleLoaded(state: PerleState.Loaded) {
+        val itemVersion = when (getItemViewMode(requireContext())) {
+            ItemViewMode.GRID -> StreamItem.ItemVersion.GRID
+            ItemViewMode.CARD -> StreamItem.ItemVersion.CARD
+            else -> StreamItem.ItemVersion.NORMAL
+        }
+        groupAdapter.update(
+            state.items.map { StreamItem(StreamWithState(it, null), itemVersion) }
+        )
+        binding.perleItemsList.scrollToPosition(0)
+
+        val updated = Localization.relativeTime(
+            OffsetDateTime.ofInstant(Instant.ofEpochMilli(state.timestamp), ZoneId.systemDefault())
+        )
+        binding.perleInfoText.text = if (state.failedChannels > 0) {
+            getString(R.string.perle_info_failed, updated, state.failedChannels)
+        } else {
+            getString(R.string.perle_info, updated)
+        }
+    }
+
+    private val listenerStreamItem = object : OnItemClickListener, OnItemLongClickListener {
+        override fun onItemClick(item: Item<*>, view: View) {
+            if (item is StreamItem) {
+                val stream = item.streamWithState.stream
+                NavigationHelper.openVideoDetailFragment(
+                    requireContext(),
+                    fm,
+                    stream.serviceId,
+                    stream.url,
+                    stream.title,
+                    null,
+                    false
+                )
+            }
+        }
+
+        override fun onItemLongClick(item: Item<*>, view: View): Boolean {
+            val context = context
+            val activity = getActivity()
+            if (item !is StreamItem || context == null || activity == null) {
+                return false
+            }
+            InfoItemDialog.Builder(
+                activity,
+                context,
+                this@PerleFragment,
+                item.streamWithState.stream.toStreamInfoItem()
+            ).create().show()
+            return true
+        }
+    }
+
+    companion object {
+        private const val KEY_GROUP_ID = "ARG_GROUP_ID"
+        private const val KEY_GROUP_NAME = "ARG_GROUP_NAME"
+
+        @JvmStatic
+        fun open(fragmentManager: FragmentManager, groupId: Long, groupName: String?) {
+            val fragment = PerleFragment()
+            fragment.arguments = bundleOf(KEY_GROUP_ID to groupId, KEY_GROUP_NAME to groupName)
+            fragmentManager.beginTransaction()
+                .setCustomAnimations(
+                    R.animator.custom_fade_in,
+                    R.animator.custom_fade_out,
+                    R.animator.custom_fade_in,
+                    R.animator.custom_fade_out
+                )
+                .replace(R.id.fragment_holder, fragment)
+                .addToBackStack(null)
+                .commit()
+        }
+    }
+}

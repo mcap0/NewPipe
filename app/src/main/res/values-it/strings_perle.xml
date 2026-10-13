@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="perle_title">Perle</string>
+    <string name="perle_shuffle">Mescola</string>
+    <string name="perle_refresh">Aggiorna</string>
+    <string name="perle_loading">Caricamento canali…</string>
+    <string name="perle_progress">Canali caricati: %1$d/%2$d</string>
+    <string name="perle_empty">Nessun video trovato. Prova ad aggiornare, o controlla che il gruppo contenga dei canali.</string>
+    <string name="perle_info">Aggiornato %1$s</string>
+    <string name="perle_info_failed">Aggiornato %1$s · canali saltati per errori: %2$d</string>
+</resources>
