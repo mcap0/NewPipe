@@ -352,9 +352,9 @@ class CastService : Service() {
             playWithRetries(dlna)
         } catch (e: UpnpException) {
             val error = "${e.errorCode} ${e.errorDescription}"
+            // still busy after the retries: the TV is usually off, or showing another app
             fail(
                 when {
-                    // still busy after the retries: usually off, or showing another app
                     e.errorCode == ERROR_TRANSITION_NOT_AVAILABLE -> getString(R.string.cast_error_tv_busy)
                     media.dash != null -> getString(R.string.cast_error_live_refused, error)
                     else -> getString(R.string.cast_error_tv, error)
