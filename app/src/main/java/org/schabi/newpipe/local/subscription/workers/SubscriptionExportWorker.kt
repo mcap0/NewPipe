@@ -34,11 +34,15 @@ class SubscriptionExportWorker(
     override suspend fun doWork(): Result {
         return try {
             val uri = inputData.getString(EXPORT_PATH)!!.toUri()
-            val table = NewPipeDatabase.getInstance(applicationContext).subscriptionDAO()
-            val subscriptions =
-                table.getAll()
-                    .awaitFirst()
-                    .map { SubscriptionItem(it.serviceId, it.url ?: "", it.name ?: "") }
+            val database = NewPipeDatabase.getInstance(applicationContext)
+            val entities = database.subscriptionDAO().getAll().awaitFirst()
+            val subscriptions = entities.map { SubscriptionItem(it.serviceId, it.url ?: "", it.name ?: "") }
+
+            // the folders (feed groups), so that they can be restored with the subscriptions
+            val feedGroupDAO = database.feedGroupDAO()
+            val groups = feedGroupDAO.getAll().awaitFirst()
+            val members = groups.associate { it.uid to feedGroupDAO.getSubscriptionIdsFor(it.uid).awaitFirst() }
+            val feedGroups = FeedGroupBackup.export(groups, members, entities)
 
             val qty = subscriptions.size
             val title = applicationContext.resources.getQuantityString(R.plurals.export_subscriptions, qty, qty)
@@ -47,11 +51,11 @@ class SubscriptionExportWorker(
             withContext(Dispatchers.IO) {
                 // Truncate file if it already exists
                 applicationContext.contentResolver.openOutputStream(uri, "wt")?.use {
-                    ImportExportJsonHelper.writeTo(subscriptions, it)
+                    ImportExportJsonHelper.writeTo(subscriptions, it, feedGroups)
                 }
             }
 
-            Log.i(TAG, "Exported $qty subscriptions")
+            Log.i(TAG, "Exported $qty subscriptions and ${feedGroups.size} folders")
 
             withContext(Dispatchers.Main) {
                 Toast

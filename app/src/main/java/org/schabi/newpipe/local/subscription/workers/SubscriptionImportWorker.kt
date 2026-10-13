@@ -32,7 +32,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.parcelize.Parcelize
+import org.schabi.newpipe.NewPipeDatabase
 import org.schabi.newpipe.R
+import org.schabi.newpipe.database.feed.model.FeedGroupEntity
 import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.local.subscription.SubscriptionManager
 import org.schabi.newpipe.streams.io.SharpInputStream
@@ -45,6 +47,9 @@ class SubscriptionImportWorker(
 ) : CoroutineWorker(context, params) {
 
     private lateinit var subscriptions: List<SubscriptionItem>
+
+    /** The folders (feed groups) to restore, only present in NewPipe's own JSON exports. */
+    private var feedGroups: List<FeedGroupItem> = emptyList()
 
     private val subscriptionManager = SubscriptionManager(context)
     private val mutex = Mutex()
@@ -123,6 +128,15 @@ class SubscriptionImportWorker(
         }
 
         setForeground(createForegroundInfo(title = title, progress = size))
+
+        if (feedGroups.isNotEmpty()) {
+            try {
+                withContext(Dispatchers.IO) { restoreFeedGroups() }
+            } catch (exception: Exception) {
+                // the subscriptions are already imported, so do not report a failure
+                Log.e(TAG, "Error while restoring the folders", exception)
+            }
+        }
         withContext(Dispatchers.Main) {
             Toast.makeText(applicationContext, R.string.import_complete_toast, LENGTH_SHORT)
                 .show()
@@ -154,10 +168,37 @@ class SubscriptionImportWorker(
 
                 is SubscriptionImportInput.PreviousExportMode ->
                     context.contentResolver.openInputStream(input.url.toUri())?.use {
-                        ImportExportJsonHelper.readFrom(it)
+                        val data = ImportExportJsonHelper.readDataFrom(it)
+                        feedGroups = data.feedGroups
+                        data.subscriptions
                     }
             } ?: emptyList()
         }
+    }
+
+    /**
+     * Creates the folders of the export, or adds the channels to the folders with the same name.
+     */
+    private fun restoreFeedGroups() {
+        val database = NewPipeDatabase.getInstance(context)
+        val feedGroupDAO = database.feedGroupDAO()
+        val subscriptionDAO = database.subscriptionDAO()
+        val existingGroups = feedGroupDAO.getAll().blockingFirst()
+        val existingMembers = existingGroups.associate {
+            it.uid to feedGroupDAO.getSubscriptionIdsFor(it.uid).blockingFirst()
+        }
+
+        val plan = FeedGroupBackup.planImport(feedGroups, existingGroups, existingMembers) { serviceId, url ->
+            subscriptionDAO.getSubscriptionIdInternal(serviceId, url)
+        }
+        database.runInTransaction {
+            for (group in plan) {
+                val groupId = group.existingId
+                    ?: feedGroupDAO.insert(FeedGroupEntity(0, group.name, group.icon))
+                feedGroupDAO.updateSubscriptionsForGroup(groupId, group.subscriptionIds)
+            }
+        }
+        Log.i(TAG, "Restored ${plan.size} folders")
     }
 
     private fun createForegroundInfo(

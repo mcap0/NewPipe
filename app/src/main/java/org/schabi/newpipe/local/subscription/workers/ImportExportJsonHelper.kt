@@ -32,7 +32,11 @@ import org.schabi.newpipe.extractor.subscription.SubscriptionExtractor.InvalidSo
  * of being able to transfer subscriptions to any device.
  */
 object ImportExportJsonHelper {
-    private val json = Json { encodeDefaults = true }
+    private val json = Json {
+        encodeDefaults = true
+        // be tolerant with files written by newer versions or other forks
+        ignoreUnknownKeys = true
+    }
 
     /**
      * Read a JSON source through the input stream.
@@ -42,14 +46,24 @@ object ImportExportJsonHelper {
      */
     @JvmStatic
     @Throws(InvalidSourceException::class)
-    fun readFrom(`in`: InputStream?): List<SubscriptionItem> {
+    fun readFrom(`in`: InputStream?): List<SubscriptionItem> = readDataFrom(`in`).subscriptions
+
+    /**
+     * Read a JSON source through the input stream, including the folders (feed groups).
+     *
+     * @param in            the input stream (e.g. a file)
+     * @return the parsed subscriptions and folders
+     */
+    @JvmStatic
+    @Throws(InvalidSourceException::class)
+    fun readDataFrom(`in`: InputStream?): SubscriptionData {
         if (`in` == null) {
             throw InvalidSourceException("input is null")
         }
 
         try {
             @OptIn(ExperimentalSerializationApi::class)
-            return json.decodeFromStream<SubscriptionData>(`in`).subscriptions
+            return json.decodeFromStream<SubscriptionData>(`in`)
         } catch (e: Throwable) {
             throw InvalidSourceException("Couldn't parse json", e)
         }
@@ -60,13 +74,16 @@ object ImportExportJsonHelper {
      *
      * @param items         the list of subscriptions items
      * @param out           the output stream (e.g. a file)
+     * @param feedGroups    the folders (feed groups) to save with the subscriptions
      */
     @OptIn(ExperimentalSerializationApi::class)
     @JvmStatic
+    @JvmOverloads
     fun writeTo(
         items: List<SubscriptionItem>,
-        out: OutputStream
+        out: OutputStream,
+        feedGroups: List<FeedGroupItem> = emptyList()
     ) {
-        json.encodeToStream(SubscriptionData(items), out)
+        json.encodeToStream(SubscriptionData(items, feedGroups), out)
     }
 }
