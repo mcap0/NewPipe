@@ -332,6 +332,7 @@ class CastService : Service() {
         }
 
         val choice = item.choose(item.fallbackHeight ?: wantedHeight, wantedAudioTrackId)
+            ?.let { IosStreamUrls.withIosUrls(it, item.info.id) }
         if (choice == null) {
             fail(getString(R.string.cast_error_no_stream))
             return false
