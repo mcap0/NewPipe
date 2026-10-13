@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="cast_to_tv">Trasmetti a TV</string>
+    <string name="cast_searching">Ricerca in corso…</string>
+    <string name="cast_retry">Riprova</string>
+    <string name="cast_no_devices">Nessun TV trovato. Controlla che telefono e TV siano sulla stessa rete Wi-Fi e che il TV sia acceso, poi tocca Riprova.</string>
+    <string name="cast_playing_on">Su: %1$s</string>
+    <string name="cast_notification_text">%1$s · %2$s</string>
+    <string name="cast_play_pause">Play/Pausa</string>
+    <string name="cast_stop">Stop</string>
+    <string name="cast_volume_up">Alza volume</string>
+    <string name="cast_volume_down">Abbassa volume</string>
+    <string name="cast_volume">Volume %1$d</string>
+    <string name="cast_copy_log">Copia log</string>
+    <string name="cast_clear_log">Cancella</string>
+
+    <string name="cast_status_connecting">Connessione…</string>
+    <string name="cast_status_buffering">Caricamento sul TV…</string>
+    <string name="cast_status_playing">In riproduzione</string>
+    <string name="cast_status_paused">In pausa</string>
+    <string name="cast_status_stopped">Fermato</string>
+    <string name="cast_status_error">Errore</string>
+
+    <string name="cast_error_no_wifi">Il telefono non è connesso a una rete Wi-Fi</string>
+    <string name="cast_error_no_stream">Questo video non ha uno stream trasmissibile (serve un MP4 con audio fino a 720p)</string>
+    <string name="cast_error_tv">Il TV ha rifiutato la richiesta: %1$s</string>
+    <string name="cast_error_unreachable">Il TV non è raggiungibile</string>
+
+    <string name="cast_direct_link_title">Invia link diretto</string>
+    <string name="cast_direct_link_summary">Passa al TV il link originale del video invece di farlo passare dal telefono. Solo per TV che supportano HTTPS; YouTube potrebbe rifiutare il TV.</string>
+    <string name="cast_log_title">Log Trasmetti a TV</string>
+    <string name="cast_log_summary">Registro tecnico degli ultimi tentativi, da allegare a una segnalazione</string>
+    <string name="cast_log_empty">Il log è vuoto</string>
+</resources>

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:title="@string/cast_to_tv">
+
+    <SwitchPreferenceCompat
+        android:defaultValue="false"
+        android:key="@string/cast_direct_link_key"
+        android:summary="@string/cast_direct_link_summary"
+        android:title="@string/cast_direct_link_title"
+        app:singleLineTitle="false"
+        app:iconSpaceReserved="false" />
+
+    <Preference
+        android:key="@string/cast_log_key"
+        android:summary="@string/cast_log_summary"
+        android:title="@string/cast_log_title"
+        app:singleLineTitle="false"
+        app:iconSpaceReserved="false" />
+
+</PreferenceScreen>

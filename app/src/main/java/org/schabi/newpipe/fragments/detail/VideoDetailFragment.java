@@ -65,6 +65,7 @@ import com.google.android.material.tabs.TabLayout;
 
 import org.schabi.newpipe.App;
 import org.schabi.newpipe.R;
+import org.schabi.newpipe.cast.CastLauncher;
 import org.schabi.newpipe.database.stream.model.StreamEntity;
 import org.schabi.newpipe.databinding.FragmentVideoDetailBinding;
 import org.schabi.newpipe.download.DownloadDialog;
@@ -516,6 +517,8 @@ public final class VideoDetailFragment
                 ShareUtils.openUrlInBrowser(requireContext(), info.getUrl())));
         binding.detailControlsPlayWithKodi.setOnClickListener(makeOnClickListener(info ->
                 KoreUtils.playWithKore(requireContext(), Uri.parse(info.getUrl()))));
+        binding.detailControlsCastToTv.setOnClickListener(makeOnClickListener(info ->
+                CastLauncher.show(this, info)));
         if (DEBUG) {
             binding.detailControlsCrashThePlayer.setOnClickListener(v ->
                     VideoDetailPlayerCrasher.onCrashThePlayer(requireContext(), player));
@@ -1533,6 +1536,8 @@ public final class VideoDetailFragment
 
         currentInfo = info;
         setInitialData(info.getServiceId(), info.getOriginalUrl(), info.getName(), playQueue);
+        binding.detailControlsCastToTv.setVisibility(
+                CastLauncher.isSupported(info.getStreamType()) ? View.VISIBLE : View.GONE);
 
         updateTabs(info);
 

@@ -17,6 +17,7 @@ import androidx.preference.PreferenceManager;
 
 import org.schabi.newpipe.App;
 import org.schabi.newpipe.R;
+import org.schabi.newpipe.cast.CastLauncher;
 import org.schabi.newpipe.error.ErrorInfo;
 import org.schabi.newpipe.error.ErrorUtil;
 import org.schabi.newpipe.error.UserAction;
@@ -121,6 +122,7 @@ public final class InfoItemDialog {
          *     | SHARE                                      |
          *     | OPEN_IN_BROWSER                            |
          *     | PLAY_WITH_KODI                             |
+         *     | CAST_TO_TV                                 |
          *     | MARK_AS_WATCHED                            |
          *     | SHOW_CHANNEL_DETAILS                       |
          *     + - - - - - - - - - - - - - - - - - - - - - -+
@@ -162,6 +164,7 @@ public final class InfoItemDialog {
          *     | SHARE                                      |
          *     | OPEN_IN_BROWSER                            |
          *     | PLAY_WITH_KODI                             |
+         *     | CAST_TO_TV                                 |
          *     | MARK_AS_WATCHED                            |
          *     | SHOW_CHANNEL_DETAILS                       |
          *     + - - - - - - - - - - - - - - - - - - - - - -+
@@ -327,6 +330,17 @@ public final class InfoItemDialog {
         }
 
         /**
+         * Adds the {@link StreamDialogDefaultEntry#CAST_TO_TV} entry for videos.
+         * @return the current {@link Builder} instance
+         */
+        public Builder addCastToTvEntryIfNeeded() {
+            if (CastLauncher.isSupported(infoItem.getStreamType())) {
+                addEntry(StreamDialogDefaultEntry.CAST_TO_TV);
+            }
+            return this;
+        }
+
+        /**
          * Add the entries which are usually at the bottom of the action list.
          * @return the current {@link Builder} instance
          */
@@ -338,6 +352,7 @@ public final class InfoItemDialog {
                     StreamDialogDefaultEntry.OPEN_IN_BROWSER
             );
             addPlayWithKodiEntryIfNeeded();
+            addCastToTvEntryIfNeeded();
             addMarkAsWatchedEntryIfNeeded();
             addEntry(StreamDialogDefaultEntry.SHOW_CHANNEL_DETAILS);
             return this;

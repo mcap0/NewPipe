@@ -11,6 +11,12 @@
         app:iconSpaceReserved="false" />
 
     <PreferenceScreen
+        android:fragment="org.schabi.newpipe.settings.CastSettingsFragment"
+        android:icon="@drawable/ic_cast"
+        android:title="@string/cast_to_tv"
+        app:iconSpaceReserved="false" />
+
+    <PreferenceScreen
         android:fragment="org.schabi.newpipe.settings.DownloadSettingsFragment"
         android:icon="@drawable/ic_file_download"
         android:title="@string/settings_category_downloads_title"

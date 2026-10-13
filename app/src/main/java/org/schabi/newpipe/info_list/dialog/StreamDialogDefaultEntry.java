@@ -12,6 +12,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.StringRes;
 
 import org.schabi.newpipe.R;
+import org.schabi.newpipe.cast.CastLauncher;
 import org.schabi.newpipe.database.stream.model.StreamEntity;
 import org.schabi.newpipe.download.DownloadDialog;
 import org.schabi.newpipe.error.ErrorInfo;
@@ -110,6 +111,18 @@ public enum StreamDialogDefaultEntry {
 
     PLAY_WITH_KODI(R.string.play_with_kodi_title, (fragment, item) ->
             KoreUtils.playWithKore(fragment.requireContext(), Uri.parse(item.getUrl()))),
+
+    /**
+     * Fetches the stream info and opens the list of TVs to cast the stream to via DLNA.
+     */
+    CAST_TO_TV(R.string.cast_to_tv, (fragment, item) ->
+            fetchStreamInfoAndSaveToDatabase(fragment.requireContext(), item.getServiceId(),
+                    item.getUrl(), info -> {
+                        if (fragment.isAdded() && !fragment.isStateSaved()) {
+                            CastLauncher.show(fragment, info);
+                        }
+                    })
+    ),
 
     SHARE(R.string.share, (fragment, item) ->
             ShareUtils.shareText(fragment.requireContext(), item.getName(), item.getUrl(),
