@@ -46,12 +46,13 @@ class DlnaClient(private val device: DlnaDevice) {
                 INSTANCE_ID,
                 "CurrentURI" to media.url,
                 "CurrentURIMetaData" to metadata
-            )
+            ),
+            readTimeoutMillis = FIRST_CONTACT_TIMEOUT_MILLIS
         )
     }
 
     fun play() {
-        avTransport("Play", listOf(INSTANCE_ID, "Speed" to "1"))
+        avTransport("Play", listOf(INSTANCE_ID, "Speed" to "1"), readTimeoutMillis = FIRST_CONTACT_TIMEOUT_MILLIS)
     }
 
     fun pause() {
@@ -97,9 +98,10 @@ class DlnaClient(private val device: DlnaDevice) {
     private fun avTransport(
         action: String,
         arguments: List<Pair<String, String>>,
-        logAnswer: Boolean = true
+        logAnswer: Boolean = true,
+        readTimeoutMillis: Int = READ_TIMEOUT_MILLIS
     ): Map<String, String> {
-        return call(device.avTransportControlUrl, device.avTransportServiceType, action, arguments, logAnswer)
+        return call(device.avTransportControlUrl, device.avTransportServiceType, action, arguments, logAnswer, readTimeoutMillis)
     }
 
     private fun renderingControl(action: String, arguments: List<Pair<String, String>>): Map<String, String> {
@@ -108,7 +110,7 @@ class DlnaClient(private val device: DlnaDevice) {
         if (url == null || serviceType == null) {
             throw UpnpException(action, 0, "The device has no RenderingControl service")
         }
-        return call(url, serviceType, action, arguments, true)
+        return call(url, serviceType, action, arguments, true, READ_TIMEOUT_MILLIS)
     }
 
     private fun call(
@@ -116,7 +118,8 @@ class DlnaClient(private val device: DlnaDevice) {
         serviceType: String,
         action: String,
         arguments: List<Pair<String, String>>,
-        logAnswer: Boolean
+        logAnswer: Boolean,
+        readTimeoutMillis: Int
     ): Map<String, String> {
         val envelope = Soap.buildEnvelope(serviceType, action, arguments)
         if (logAnswer) {
@@ -131,7 +134,8 @@ class DlnaClient(private val device: DlnaDevice) {
                     "SOAPACTION" to Soap.soapActionHeader(serviceType, action),
                     "User-Agent" to USER_AGENT
                 ),
-                body = envelope.toByteArray(Charsets.UTF_8)
+                body = envelope.toByteArray(Charsets.UTF_8),
+                readTimeoutMillis = readTimeoutMillis
             )
             val body = response.bodyAsString()
             if (logAnswer || !response.isSuccessful) {
@@ -151,6 +155,13 @@ class DlnaClient(private val device: DlnaDevice) {
         private val INSTANCE_ID = "InstanceID" to "0"
         private val CHANNEL = "Channel" to "Master"
         const val USER_AGENT = "Android/1.0 UPnP/1.0 NewPipe/1.0"
+        private const val READ_TIMEOUT_MILLIS = 10_000
+
+        /**
+         * Samsung TVs show an "allow this device?" popup the first time and only answer after
+         * the user accepts it, so the first commands get more time.
+         */
+        private const val FIRST_CONTACT_TIMEOUT_MILLIS = 30_000
 
         /** Downloads a device description and logs it. */
         @Throws(IOException::class)
