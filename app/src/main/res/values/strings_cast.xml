@@ -51,4 +51,7 @@
     <string name="cast_subtitles_hint">If the subtitles do not appear, turn them on in the subtitle settings of the TV</string>
     <string name="cast_quality_fallback">The TV could not play %1$s, now playing %2$s</string>
     <string name="cast_error_cannot_play">The TV could not play this video at any quality</string>
+    <string name="cast_last_used">%1$s · last used</string>
+    <string name="cast_error_tv_busy">The TV is busy or switched off: turn it on, close what it is showing and try again</string>
+    <string name="cast_sent_to_tv">Playing on %1$s</string>
 </resources>

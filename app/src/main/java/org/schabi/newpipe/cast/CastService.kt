@@ -82,6 +82,8 @@ data class CastQueueEntry(val title: String, val uploader: String, val durationS
 data class CastState(
     val active: Boolean = false,
     val deviceName: String = "",
+    /** URL of the video being cast */
+    val url: String = "",
     val title: String = "",
     val uploader: String = "",
     val status: CastStatus = CastStatus.CONNECTING,
@@ -351,10 +353,11 @@ class CastService : Service() {
         } catch (e: UpnpException) {
             val error = "${e.errorCode} ${e.errorDescription}"
             fail(
-                if (media.dash != null) {
-                    getString(R.string.cast_error_live_refused, error)
-                } else {
-                    getString(R.string.cast_error_tv, error)
+                when {
+                    // still busy after the retries: usually off, or showing another app
+                    e.errorCode == ERROR_TRANSITION_NOT_AVAILABLE -> getString(R.string.cast_error_tv_busy)
+                    media.dash != null -> getString(R.string.cast_error_live_refused, error)
+                    else -> getString(R.string.cast_error_tv, error)
                 }
             )
             return false
@@ -805,6 +808,7 @@ class CastService : Service() {
         return currentState.copy(
             active = true,
             deviceName = device?.friendlyName.orEmpty(),
+            url = item.info.url.orEmpty(),
             title = item.title,
             uploader = item.uploader,
             durationSeconds = item.durationSeconds,
@@ -1081,6 +1085,7 @@ class CastService : Service() {
         private fun initialState(device: DlnaDevice, item: CastItem) = CastState(
             active = true,
             deviceName = device.friendlyName,
+            url = item.info.url.orEmpty(),
             title = item.title,
             uploader = item.uploader,
             durationSeconds = item.durationSeconds,

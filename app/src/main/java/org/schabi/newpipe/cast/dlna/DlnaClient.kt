@@ -178,8 +178,8 @@ class DlnaClient(private val device: DlnaDevice) {
         fun fetchDescription(location: String): String {
             val response = LanHttp.request(location, headers = listOf("User-Agent" to USER_AGENT))
             val body = response.bodyAsString()
-            CastLog.d("Device description from $location (HTTP ${response.code}):\n$body")
             if (!response.isSuccessful) {
+                CastLog.d("Device description from $location (HTTP ${response.code}):\n$body")
                 throw IOException("HTTP ${response.code} while downloading $location")
             }
             return body

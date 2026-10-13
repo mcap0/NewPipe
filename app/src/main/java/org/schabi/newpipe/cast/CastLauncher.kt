@@ -55,6 +55,31 @@ object CastLauncher {
         }
     }
 
+    /**
+     * While casting, a video opened in the app goes to the TV instead of the phone player.
+     *
+     * @return true if the video is (now) playing on the TV, false to play it on the phone
+     */
+    @JvmStatic
+    fun playOnTvIfCasting(fragment: Fragment, info: StreamInfo): Boolean {
+        val context = fragment.context ?: return false
+        if (!CastService.isActive || !isSupported(info.streamType)) {
+            return false
+        }
+        val state = CastService.state.value
+        if (state?.url == info.url) {
+            // already on the TV, e.g. opened again from the casting bar
+            return true
+        }
+        val item = CastItem(info)
+        if (!item.isCastable) {
+            return false
+        }
+        CastService.enqueue(context, item, playNow = true)
+        Toast.makeText(context, context.getString(R.string.cast_sent_to_tv, state?.deviceName.orEmpty()), Toast.LENGTH_SHORT).show()
+        return true
+    }
+
     /** Opens the remote control of the video being cast. */
     @JvmStatic
     fun openController(context: Context) {

@@ -32,6 +32,18 @@ data class DlnaDevice(
     val connectionManagerUrl: String? = null,
     val connectionManagerServiceType: String? = null
 ) : Serializable {
+    /**
+     * The brand, to tell apart TVs with similar names: the first word of the manufacturer
+     * (`Samsung Electronics` -> `Samsung`), null if unknown or already in [friendlyName].
+     */
+    val brand: String?
+        get() = manufacturer?.trim()?.split(' ')?.firstOrNull()?.trim('.', ',')
+            ?.takeIf { it.isNotEmpty() && !friendlyName.contains(it, ignoreCase = true) }
+
+    /** The name shown in the list of TVs, with the brand if it is not in the name. */
+    val label: String
+        get() = brand?.let { "$friendlyName ($it)" } ?: friendlyName
+
     companion object {
         private const val serialVersionUID = 1L
     }

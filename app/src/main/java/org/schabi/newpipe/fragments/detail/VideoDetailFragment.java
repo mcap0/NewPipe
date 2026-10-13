@@ -881,7 +881,10 @@ public final class VideoDetailFragment
                             }
                         }
 
-                        if (isAutoplayEnabled() || forceFullscreen) {
+                        // while casting, the video goes to the TV instead
+                        if (autoPlayEnabled && CastLauncher.playOnTvIfCasting(this, result)) {
+                            autoPlayEnabled = false;
+                        } else if (isAutoplayEnabled() || forceFullscreen) {
                             openVideoPlayerAutoFullscreen();
                         }
                     }

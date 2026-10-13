@@ -72,6 +72,17 @@ class DeviceDescriptionParserTest {
     }
 
     @Test
+    fun labelShowsTheBrandWhenItIsNotInTheName() {
+        fun device(name: String, manufacturer: String?) = DlnaDevice(
+            "uuid:1", name, manufacturer, null, "http://tv/", "http://tv/av", "av", null, null
+        )
+        assertEquals("Tele (Samsung)", device("Tele", "Samsung Electronics").label)
+        assertEquals("[LG] webOS TV TN510S", device("[LG] webOS TV TN510S", "LG Electronics.").label)
+        assertEquals("XBOXONE (Microsoft)", device("XBOXONE", "Microsoft Corporation").label)
+        assertEquals("Tele", device("Tele", null).label)
+    }
+
+    @Test
     fun resolvesRelativeUrlsAgainstLocation() {
         val device = DeviceDescriptionParser.parse(
             description("AVTransport/control", "RenderingControl/control"),

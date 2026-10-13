@@ -158,9 +158,14 @@ object Ssdp {
                 }
 
                 val text = String(packet.data, packet.offset, packet.length, StandardCharsets.UTF_8)
-                CastLog.d("SSDP: answer from ${packet.address?.hostAddress}:\n${text.trim()}")
-                val response = parseResponse(text) ?: continue
+                val response = parseResponse(text)
+                if (response == null) {
+                    CastLog.d("SSDP: unexpected answer from ${packet.address?.hostAddress}:\n${text.trim()}")
+                    continue
+                }
+                // devices answer several times: only the first answer is logged, in one line
                 if (seen.add(response.location)) {
+                    CastLog.d("SSDP: answer from ${packet.address?.hostAddress}: ${response.location}")
                     onResponse(response)
                 }
             }

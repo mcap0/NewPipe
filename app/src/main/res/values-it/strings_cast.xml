@@ -48,4 +48,7 @@
     <string name="cast_subtitles_hint">Se i sottotitoli non compaiono, attivali nelle impostazioni dei sottotitoli del TV</string>
     <string name="cast_quality_fallback">Il TV non riusciva a riprodurre %1$s, ora in %2$s</string>
     <string name="cast_error_cannot_play">Il TV non riesce a riprodurre questo video in nessuna qualità</string>
+    <string name="cast_last_used">%1$s · usato l\'ultima volta</string>
+    <string name="cast_error_tv_busy">Il TV è occupato o spento: accendilo, chiudi quello che sta mostrando e riprova</string>
+    <string name="cast_sent_to_tv">In riproduzione su %1$s</string>
 </resources>

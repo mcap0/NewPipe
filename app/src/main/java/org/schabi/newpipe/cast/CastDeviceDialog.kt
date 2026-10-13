@@ -16,6 +16,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.core.os.bundleOf
 import androidx.core.view.isVisible
 import androidx.fragment.app.DialogFragment
+import androidx.preference.PreferenceManager
 import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers
 import io.reactivex.rxjava3.core.Observable
 import io.reactivex.rxjava3.disposables.Disposable
@@ -100,10 +101,7 @@ class CastDeviceDialog : DialogFragment() {
             .subscribeOn(Schedulers.io())
             .observeOn(AndroidSchedulers.mainThread())
             .subscribe(
-                { device ->
-                    devices.add(device)
-                    adapter.add(device.friendlyName)
-                },
+                { device -> addDevice(device) },
                 { error ->
                     isSearching = false
                     if (error is NoLocalNetworkException) {
@@ -120,6 +118,16 @@ class CastDeviceDialog : DialogFragment() {
                     updateViews()
                 }
             )
+    }
+
+    /** The TV used last time goes first, so that it is not confused with the others. */
+    private fun addDevice(device: DlnaDevice) {
+        val lastUdn = PreferenceManager.getDefaultSharedPreferences(requireContext())
+            .getString(LAST_DEVICE_KEY, null)
+        val isLast = device.udn == lastUdn
+        val index = if (isLast) 0 else devices.size
+        devices.add(index, device)
+        adapter.insert(if (isLast) getString(R.string.cast_last_used, device.label) else device.label, index)
     }
 
     private fun updateViews() {
@@ -140,6 +148,9 @@ class CastDeviceDialog : DialogFragment() {
 
     private fun onDeviceChosen(device: DlnaDevice) {
         val context = requireContext().applicationContext
+        PreferenceManager.getDefaultSharedPreferences(context).edit()
+            .putString(LAST_DEVICE_KEY, device.udn)
+            .apply()
         val arguments = requireArguments()
         val serviceId = arguments.getInt(ARG_SERVICE_ID)
         val url = arguments.getString(ARG_URL).orEmpty()
@@ -165,6 +176,7 @@ class CastDeviceDialog : DialogFragment() {
         const val TAG = "CastDeviceDialog"
         private const val ARG_SERVICE_ID = "service_id"
         private const val ARG_URL = "url"
+        private const val LAST_DEVICE_KEY = "cast_last_device_udn"
 
         /** The video to cast: it is too big for the arguments. */
         private var pendingItem: CastItem? = null
