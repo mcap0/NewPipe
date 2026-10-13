@@ -52,6 +52,17 @@ class DidlLiteTest {
     }
 
     @Test
+    fun liveStreamCarriesItsDlnaFeatures() {
+        val format = TsFormat("video/mpeg", "AVC_TS_HD_EU_ISO")
+        val live = media.copy(mimeType = format.mimeType, dlnaFeatures = format.dlnaFeatures)
+        val res = XmlUtils.child(XmlUtils.child(XmlUtils.parse(DidlLite.build(live)).documentElement, "item")!!, "res")!!
+        assertEquals(
+            "http-get:*:video/mpeg:DLNA.ORG_PN=AVC_TS_HD_EU_ISO;" + TsFormat.LIVE_FEATURES,
+            res.getAttribute("protocolInfo")
+        )
+    }
+
+    @Test
     fun rawTextNeverAppearsUnescaped() {
         val didl = DidlLite.build(media)
         assertFalse(didl.contains("Tom & Jerry"))

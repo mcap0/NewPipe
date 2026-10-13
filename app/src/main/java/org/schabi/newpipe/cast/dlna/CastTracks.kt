@@ -45,25 +45,64 @@ data class CastDash(val video: DashTrack, val audio: DashTrack) : Serializable {
 }
 
 /**
- * Chooses the MIME type of the MPEG-TS stream from the formats the TV declares, as TVs differ in
- * the name they expect.
+ * How the MPEG-TS stream is announced to the TV: MIME type and DLNA profile.
+ *
+ * @param profile the `DLNA.ORG_PN` value, or null when the TV declares none that fits
  */
-object TsMimeType {
-    const val DEFAULT = "video/mp2t"
+data class TsFormat(val mimeType: String, val profile: String?) : Serializable {
+    /** The fourth field of the protocolInfo and the `contentFeatures.dlna.org` header. */
+    val dlnaFeatures: String
+        get() = profile?.let { "DLNA.ORG_PN=$it;$LIVE_FEATURES" } ?: LIVE_FEATURES
 
-    /** In order of preference. */
-    private val KNOWN = listOf(DEFAULT, "video/vnd.dlna.mpeg-tts", "video/mpeg", "video/x-mpeg-ts")
+    companion object {
+        private const val serialVersionUID = 1L
 
-    /**
-     * @param sinkProtocolInfo the `Sink` answer of `GetProtocolInfo`: protocolInfo entries
-     * separated by commas, e.g. `http-get:*:video/mp2t:*,http-get:*:video/mp4:*`, or null if
-     * unknown
-     */
-    fun choose(sinkProtocolInfo: String?): String {
-        val declared = sinkProtocolInfo.orEmpty()
+        /** No seeking by bytes or time, converted content, streaming transfer mode. */
+        const val LIVE_FEATURES = "DLNA.ORG_OP=00;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=01700000000000000000000000000000"
+
+        val DEFAULT = TsFormat("video/mp2t", null)
+
+        /**
+         * `video/vnd.dlna.mpeg-tts` is the timestamped variant, with 192-byte packets: the
+         * muxer writes plain 188-byte packets, which DLNA calls `video/mpeg` with `_ISO` profiles.
+         */
+        private const val TIMESTAMPED = "video/vnd.dlna.mpeg-tts"
+
+        /** Without a fitting profile, in order of preference. */
+        private val PLAIN_MIME_TYPES = listOf("video/mp2t", "video/mpeg", "video/x-mpeg-ts")
+
+        /**
+         * Chooses from the formats the TV declares, as TVs differ in the name they expect:
+         * an H.264 MPEG-TS profile with 188-byte packets (`AVC_TS_..._ISO`), AAC and HD first.
+         *
+         * @param sinkProtocolInfo the `Sink` answer of `GetProtocolInfo`: protocolInfo entries
+         * separated by commas, e.g. `http-get:*:video/mpeg:DLNA.ORG_PN=AVC_TS_HD_EU_ISO`, or
+         * null if unknown
+         */
+        fun choose(sinkProtocolInfo: String?): TsFormat {
+            val declared = parse(sinkProtocolInfo)
+            val avc = declared.filter { (mime, profile) ->
+                mime != TIMESTAMPED && profile != null && profile.startsWith("AVC_TS_") && profile.endsWith("_ISO")
+            }
+            val best = avc.maxByOrNull { (_, profile) ->
+                (if ("AAC" in profile!!) 4 else 0) + (if ("HD" in profile) 2 else 0) + (if ("HP" in profile) 1 else 0)
+            }
+            if (best != null) return TsFormat(best.first, best.second)
+            val mimeTypes = declared.map { it.first }.toSet()
+            return PLAIN_MIME_TYPES.firstOrNull { it in mimeTypes }?.let { TsFormat(it, null) } ?: DEFAULT
+        }
+
+        /** @return the video entries of [sinkProtocolInfo] as (MIME type, DLNA profile) */
+        fun parse(sinkProtocolInfo: String?): List<Pair<String, String?>> = sinkProtocolInfo.orEmpty()
             .split(',')
-            .mapNotNull { it.trim().split(':').getOrNull(2)?.lowercase() }
-            .toSet()
-        return KNOWN.firstOrNull { it in declared } ?: DEFAULT
+            .mapNotNull { entry ->
+                val fields = entry.trim().split(':', limit = 4)
+                val mime = fields.getOrNull(2)?.lowercase()?.takeIf { it.startsWith("video/") }
+                    ?: return@mapNotNull null
+                val profile = fields.getOrNull(3)?.split(';')
+                    ?.firstOrNull { it.startsWith("DLNA.ORG_PN=") }
+                    ?.removePrefix("DLNA.ORG_PN=")
+                mime to profile
+            }
     }
 }

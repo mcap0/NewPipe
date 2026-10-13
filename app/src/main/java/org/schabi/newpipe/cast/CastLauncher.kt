@@ -13,7 +13,7 @@ import org.schabi.newpipe.cast.dlna.CastLog
 import org.schabi.newpipe.cast.dlna.CastMedia
 import org.schabi.newpipe.cast.dlna.CastStreamCandidate
 import org.schabi.newpipe.cast.dlna.CastStreamSelector
-import org.schabi.newpipe.cast.dlna.TsMimeType
+import org.schabi.newpipe.cast.dlna.TsFormat
 import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.stream.AudioTrackType
 import org.schabi.newpipe.extractor.stream.DeliveryMethod
@@ -87,7 +87,7 @@ object CastLauncher {
             url = dash.video.url,
             title = info.name.orEmpty(),
             uploader = info.uploaderName.orEmpty(),
-            mimeType = TsMimeType.DEFAULT,
+            mimeType = TsFormat.DEFAULT.mimeType,
             durationSeconds = info.duration,
             dash = dash
         )

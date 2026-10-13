@@ -25,7 +25,9 @@ data class CastMedia(
     val mimeType: String,
     val durationSeconds: Long,
     val thumbnailUrl: String? = null,
-    val dash: CastDash? = null
+    val dash: CastDash? = null,
+    /** The fourth field of the protocolInfo, null for [DidlLite.DLNA_FEATURES]. */
+    val dlnaFeatures: String? = null
 ) : Serializable {
     companion object {
         private const val serialVersionUID = 1L
@@ -74,7 +76,7 @@ object DidlLite {
      */
     const val DLNA_FEATURES = "*"
 
-    fun protocolInfo(mimeType: String) = "http-get:*:$mimeType:$DLNA_FEATURES"
+    fun protocolInfo(mimeType: String, features: String? = null) = "http-get:*:$mimeType:${features ?: DLNA_FEATURES}"
 
     /**
      * @return the DIDL-Lite document, not yet escaped for being put inside a SOAP envelope
@@ -101,7 +103,7 @@ object DidlLite {
             "<upnp:artist>$uploader</upnp:artist>" +
             "<upnp:class>object.item.videoItem</upnp:class>" +
             albumArt +
-            "<res protocolInfo=\"${XmlUtils.escape(protocolInfo(media.mimeType))}\"$duration>" +
+            "<res protocolInfo=\"${XmlUtils.escape(protocolInfo(media.mimeType, media.dlnaFeatures))}\"$duration>" +
             XmlUtils.escape(media.url) +
             "</res>" +
             "</item>" +

@@ -102,7 +102,7 @@ class DlnaClient(private val device: DlnaDevice) {
     fun getSinkProtocolInfo(): String? {
         val url = device.connectionManagerUrl ?: return null
         val serviceType = device.connectionManagerServiceType ?: return null
-        return call(url, serviceType, "GetProtocolInfo", emptyList(), true, READ_TIMEOUT_MILLIS)["Sink"]
+        return call(url, serviceType, "GetProtocolInfo", emptyList(), false, READ_TIMEOUT_MILLIS)["Sink"]
     }
 
     private fun avTransport(

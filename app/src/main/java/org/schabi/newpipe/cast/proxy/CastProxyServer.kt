@@ -24,6 +24,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import org.schabi.newpipe.cast.dlna.CastDash
 import org.schabi.newpipe.cast.dlna.CastLog
+import org.schabi.newpipe.cast.dlna.TsFormat
 import org.schabi.newpipe.cast.ts.LiveTsMuxer
 
 /**
@@ -75,7 +76,12 @@ class CastProxyServer(
     private val bindAddress: InetAddress
 ) {
     /** A registered URL, or separate video and audio streams muxed live if [muxer] is not null. */
-    private class Entry(val url: String, val mimeType: String, val muxer: LiveTsMuxer? = null)
+    private class Entry(
+        val url: String,
+        val mimeType: String,
+        val muxer: LiveTsMuxer? = null,
+        val dlnaFeatures: String = DLNA_CONTENT_FEATURES
+    )
 
     private val entries = ConcurrentHashMap<String, Entry>()
     private val random = SecureRandom()
@@ -136,10 +142,10 @@ class CastProxyServer(
      * Makes the video and audio streams of [tracks] available as a single MPEG-TS stream, muxed
      * while it is sent. The returned URL accepts `?t=<seconds>` to start from another time.
      *
-     * @param mimeType the MPEG-TS MIME type the TV accepts, e.g. `video/mp2t`
+     * @param format the MIME type and DLNA profile the TV accepts
      * @return the URL to give to the TV
      */
-    fun registerMux(tracks: CastDash, mimeType: String): String = add(Entry(tracks.video.url, mimeType, LiveTsMuxer(upstream, tracks)), "ts")
+    fun registerMux(tracks: CastDash, format: TsFormat): String = add(Entry(tracks.video.url, format.mimeType, LiveTsMuxer(upstream, tracks), format.dlnaFeatures), "ts")
 
     private fun add(entry: Entry, extension: String = extensionFor(entry.mimeType)): String {
         val token = ByteArray(12).also { random.nextBytes(it) }
@@ -282,7 +288,7 @@ class CastProxyServer(
             return
         }
         val start = startSeconds(request.path)
-        writeStreamHeaders(output, entry.mimeType)
+        writeStreamHeaders(output, entry.mimeType, entry.dlnaFeatures)
         if (request.method == "HEAD") {
             output.flush()
             return
@@ -297,11 +303,11 @@ class CastProxyServer(
         }
     }
 
-    private fun writeStreamHeaders(output: OutputStream, contentType: String) {
+    private fun writeStreamHeaders(output: OutputStream, contentType: String, dlnaFeatures: String) {
         val headers = "HTTP/1.1 200 OK\r\n" +
             "Content-Type: $contentType\r\n" +
             "transferMode.dlna.org: Streaming\r\n" +
-            "contentFeatures.dlna.org: $DLNA_LIVE_CONTENT_FEATURES\r\n" +
+            "contentFeatures.dlna.org: $dlnaFeatures\r\n" +
             "Server: $SERVER\r\n" +
             "Connection: close\r\n" +
             "\r\n"
@@ -367,10 +373,6 @@ class CastProxyServer(
         /** DLNA.ORG_OP=01: seeking by byte range is supported; FLAGS: streaming transfer mode. */
         const val DLNA_CONTENT_FEATURES =
             "DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
-
-        /** No seeking by bytes or time, converted content, streaming transfer mode. */
-        const val DLNA_LIVE_CONTENT_FEATURES =
-            "DLNA.ORG_OP=00;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=01700000000000000000000000000000"
 
         /** @return the start time asked with `?t=<seconds>`, 0 if absent */
         fun startSeconds(path: String): Double = path.substringAfter('?', "")

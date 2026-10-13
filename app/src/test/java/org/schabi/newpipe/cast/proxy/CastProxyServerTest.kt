@@ -20,6 +20,7 @@ import org.junit.Before
 import org.junit.Test
 import org.schabi.newpipe.cast.dlna.CastDash
 import org.schabi.newpipe.cast.dlna.DashTrack
+import org.schabi.newpipe.cast.dlna.TsFormat
 
 class CastProxyServerTest {
     private val content = ByteArray(10_000) { (it % 251).toByte() }
@@ -184,14 +185,20 @@ class CastProxyServerTest {
     @Test
     fun liveStreamAnswersHeadWithoutLengthAndRefusesRanges() {
         val track = DashTrack("https://g/v", "video/mp4", "avc1", 1, 0, 10, 11, 20)
-        val url = server.registerMux(CastDash(track, track.copy(url = "https://g/a")), "video/mp2t")
+        val url = server.registerMux(
+            CastDash(track, track.copy(url = "https://g/a")),
+            TsFormat("video/mpeg", "AVC_TS_HD_EU_ISO")
+        )
         assertTrue(url.endsWith(".ts"))
 
         val head = open(url, method = "HEAD")
         assertEquals(200, head.responseCode)
-        assertEquals("video/mp2t", head.contentType)
+        assertEquals("video/mpeg", head.contentType)
         assertEquals(-1L, head.contentLengthLong)
-        assertEquals(CastProxyServer.DLNA_LIVE_CONTENT_FEATURES, head.getHeaderField("contentFeatures.dlna.org"))
+        assertEquals(
+            "DLNA.ORG_PN=AVC_TS_HD_EU_ISO;" + TsFormat.LIVE_FEATURES,
+            head.getHeaderField("contentFeatures.dlna.org")
+        )
 
         assertEquals(416, open(url, range = "bytes=100-").responseCode)
         // HEAD does not download anything

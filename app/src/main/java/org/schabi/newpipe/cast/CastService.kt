@@ -37,7 +37,7 @@ import org.schabi.newpipe.cast.dlna.DlnaClient
 import org.schabi.newpipe.cast.dlna.DlnaDevice
 import org.schabi.newpipe.cast.dlna.LocalNetwork
 import org.schabi.newpipe.cast.dlna.TransportState
-import org.schabi.newpipe.cast.dlna.TsMimeType
+import org.schabi.newpipe.cast.dlna.TsFormat
 import org.schabi.newpipe.cast.dlna.UpnpException
 import org.schabi.newpipe.cast.proxy.CastProxyServer
 
@@ -230,10 +230,15 @@ class CastService : Service() {
                 CastLog.w("Could not read the formats supported by the TV: ${e.message}")
                 null
             }
-            val mimeType = TsMimeType.choose(sink)
-            val url = server.registerMux(dash, mimeType)
-            CastLog.d("Live MPEG-TS URL for the TV ($mimeType): $url")
-            return media.copy(url = url, mimeType = mimeType).also { liveMedia = it }
+            CastLog.d(
+                "Video formats declared by the TV:\n" +
+                    TsFormat.parse(sink).joinToString("\n") { (mime, profile) -> "$mime ${profile ?: "*"}" }
+            )
+            val format = TsFormat.choose(sink)
+            val url = server.registerMux(dash, format)
+            CastLog.d("Live MPEG-TS URL for the TV (${format.mimeType}, ${format.profile ?: "no profile"}): $url")
+            return media.copy(url = url, mimeType = format.mimeType, dlnaFeatures = format.dlnaFeatures)
+                .also { liveMedia = it }
         }
 
         val url = server.register(media.url, media.mimeType)
