@@ -116,4 +116,18 @@ class DidlLiteTest {
         assertEquals(-1, UpnpTime.parse(""))
         assertEquals(-1, UpnpTime.parse(null))
     }
+
+    @Test
+    fun announcesSubtitles() {
+        val withSubtitles = media.copy(subtitleUrl = "http://192.168.1.20:41234/v/def.srt")
+        val item = XmlUtils.child(XmlUtils.parse(DidlLite.build(withSubtitles)).documentElement, "item")!!
+        assertEquals(withSubtitles.subtitleUrl, XmlUtils.childText(item, "CaptionInfoEx"))
+        assertEquals("srt", XmlUtils.child(item, "CaptionInfoEx")!!.getAttributeNS("http://www.sec.co.kr/", "type"))
+        val res = XmlUtils.children(item, "res")
+        assertEquals(2, res.size)
+        assertEquals(media.url, res[0].textContent)
+        assertEquals("http-get:*:text/srt:*", res[1].getAttribute("protocolInfo"))
+
+        assertFalse(DidlLite.build(media).contains("CaptionInfo"))
+    }
 }

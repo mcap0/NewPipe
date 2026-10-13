@@ -117,9 +117,14 @@
                     android:padding="16dp"
                     android:src="@drawable/ic_pause" />
 
-                <View
+                <ImageButton
+                    android:id="@+id/cast_next"
                     android:layout_width="64dp"
-                    android:layout_height="64dp" />
+                    android:layout_height="64dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/cast_next"
+                    android:scaleType="center"
+                    android:src="@drawable/ic_next" />
             </LinearLayout>
 
             <LinearLayout
@@ -156,6 +161,66 @@
                     android:contentDescription="@string/cast_volume_up"
                     android:src="@drawable/ic_volume_up" />
             </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:gravity="center"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/cast_quality"
+                    style="?attr/borderlessButtonStyle"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:drawableTop="@drawable/ic_settings"
+                    android:ellipsize="end"
+                    android:maxLines="2"
+                    android:textAllCaps="false"
+                    tools:text="720p" />
+
+                <Button
+                    android:id="@+id/cast_audio_track"
+                    style="?attr/borderlessButtonStyle"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:drawableTop="@drawable/ic_headset"
+                    android:ellipsize="end"
+                    android:maxLines="2"
+                    android:textAllCaps="false"
+                    tools:text="English (original)" />
+
+                <Button
+                    android:id="@+id/cast_subtitles"
+                    style="?attr/borderlessButtonStyle"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:drawableTop="@drawable/ic_subtitles"
+                    android:ellipsize="end"
+                    android:maxLines="2"
+                    android:textAllCaps="false"
+                    tools:text="Off" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/cast_queue_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:text="@string/cast_queue"
+                android:textAppearance="?android:attr/textAppearanceMedium"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:id="@+id/cast_queue_list"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="vertical" />
 
             <Button
                 android:id="@+id/cast_copy_log"

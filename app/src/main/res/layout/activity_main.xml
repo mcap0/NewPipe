@@ -18,6 +18,11 @@
             layout="@layout/toolbar_layout"
             android:id="@+id/toolbar_layout"/>
 
+        <!-- below the player, which covers it when expanded -->
+        <include
+            layout="@layout/cast_bar"
+            android:id="@+id/cast_bar_layout" />
+
         <androidx.fragment.app.FragmentContainerView
             android:id="@+id/fragment_player_holder"
             android:layout_width="match_parent"

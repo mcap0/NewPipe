@@ -14,8 +14,18 @@ library: about 1500 lines of Kotlin, most of them unit tested on the JVM.
    any list and choose **Cast to TV**.
 3. Choose the TV in the list. The first time, Samsung TVs show a popup asking to allow the
    device: accept it.
-4. The controller opens: play/pause, seek bar, volume, stop. The notification has play/pause
-   and stop, so the video keeps playing with NewPipe in the background.
+4. The controller opens: play/pause, seek bar, next, volume, stop, quality, audio track,
+   subtitles and the queue. The notification has play/pause, stop and next, so the video keeps
+   playing with NewPipe in the background.
+5. After closing the controller, open it again from the **casting bar** at the bottom of the
+   main screen, from the notification, or with **Cast to TV** on any video.
+6. While a video is cast, **Cast to TV** on another video offers to play it now, to add it to
+   the TV queue, to open the controls or to cast to another TV. At the end of a video the next
+   one of the queue starts.
+
+The position reached on the TV is saved in the history every few seconds and when casting
+stops, like with the local player: the video continues from there on the TV or on the phone,
+and casting a partly watched video starts where it was left (if "Resume playback" is enabled).
 
 If something does not work: **Settings → Cast to TV → Cast to TV log → Copy log**, and paste
 the log in a bug report. The same log is in logcat with the tag `DlnaCast`.
@@ -50,12 +60,14 @@ Code in `app/src/main/java/org/schabi/newpipe/cast/`:
 | `dlna/DidlLite.kt` | DIDL-Lite metadata (title, creator, `object.item.videoItem`, `res` with `protocolInfo="http-get:*:video/mp4:*"` and duration), UPnP time format |
 | `dlna/XmlUtils.kt` | XML escaping (`&`, `<`, `>`, `"`, `'`; emoji kept, invalid characters removed) and safe parsing (no DTD, no external entities) |
 | `dlna/LanHttp.kt` | Minimal HTTP/1.1 client restricted to local addresses (see below) |
-| `dlna/CastStreamSelector.kt` | Stream choice: progressive MP4 with audio, highest resolution up to 720p |
+| `dlna/CastStreamSelector.kt` | Stream choice: progressive MP4 with audio up to 720p, or H.264 + AAC streams to mux up to 1080p; the qualities and audio tracks that can be chosen |
+| `dlna/SrtConverter.kt` | TTML and WebVTT subtitles to SRT, shifted for streams started in the middle |
 | `dlna/CastLog.kt` | Circular in-memory log (1000 entries) shown in the settings |
 | `proxy/CastProxyServer.kt`, `proxy/HttpRange.kt` | Local HTTP server: `GET`, `HEAD`, single `Range` requests answered with `206 Partial Content`, DLNA headers |
 | `OkHttpUpstream.kt` | Downloads the video for the proxy, like NewPipe's `YoutubeHttpDataSource` |
-| `CastService.kt` | Foreground service (`connectedDevice`) owning the session, polling, notification, Wi-Fi and wake locks |
-| `CastDeviceDialog.kt`, `CastControllerActivity.kt`, `CastLauncher.kt` | User interface |
+| `CastItem.kt` | A video of the queue, with its qualities, audio tracks and subtitles |
+| `CastService.kt` | Foreground service (`connectedDevice`) owning the session and the queue, polling, saving the position in the history, notification, Wi-Fi and wake locks |
+| `CastDeviceDialog.kt`, `CastControllerActivity.kt`, `CastLauncher.kt`, `CastBar.kt` | User interface |
 | `../settings/CastSettingsFragment.kt` | "Send direct link" option and the log |
 
 Everything in `dlna/` and `proxy/` is plain Kotlin without Android dependencies, so it is
@@ -106,19 +118,22 @@ No location or nearby devices permission is needed (the SSID is never read).
 - Only regular videos: live streams (HLS/DASH) and audio-only content are not offered.
 - Phone and TV must be on the same network, and the network must allow multicast and
   device-to-device traffic (guest networks and "AP isolation" block it).
-- One TV at a time; no queue: the session ends when the video ends.
-- Subtitles are not sent.
+- One TV at a time.
+- Subtitles are sent as SRT, announced with the Samsung `sec:CaptionInfoEx` element and
+  `CaptionInfo.sec` header and with a second `res` of type `text/srt`. Some TVs only show them
+  after enabling subtitles in their own menu; others ignore external subtitles.
+- Changing quality, audio track or subtitles sends the video again from the same position.
+- Another audio track than the original one is only available as a separate stream, so it is
+  always muxed into MPEG-TS.
 
 ## Next steps
 
 1. **1080p and above (phase 2):** mux the DASH video-only and audio streams in the proxy into a
    single fragmented MP4 (or MPEG-TS) on the fly. Seeking then needs either time based seeking
    (`TimeSeekRange.dlna.org`) or an index of the output.
-2. Queue: use `SetNextAVTransportURI` to continue with the play queue.
-3. Subtitles via the Samsung `sec:CaptionInfoEx` extension and `res` elements of type
-   `text/srt`.
-4. GENA event subscriptions (`LastChange`) instead of polling every second.
-5. A media session, so that the phone volume keys control the TV volume.
+2. Queue: use `SetNextAVTransportURI` for gapless changes between videos.
+3. GENA event subscriptions (`LastChange`) instead of polling every second.
+4. A media session, so that the phone volume keys control the TV volume.
 
 ## Testing
 

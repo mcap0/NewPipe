@@ -35,4 +35,18 @@
     <string name="cast_log_title">Cast to TV log</string>
     <string name="cast_log_summary">Technical log of the last attempts, to attach to a bug report</string>
     <string name="cast_log_empty">The log is empty</string>
+
+    <string name="cast_play_now">Play now on the TV</string>
+    <string name="cast_add_to_queue">Add to the TV queue</string>
+    <string name="cast_added_to_queue">Added to the TV queue</string>
+    <string name="cast_open_controller">Open the TV controls</string>
+    <string name="cast_other_tv">Cast to another TV</string>
+    <string name="cast_next">Next</string>
+    <string name="cast_queue">Queue</string>
+    <string name="cast_quality">Quality</string>
+    <string name="cast_quality_auto">Auto</string>
+    <string name="cast_quality_auto_current">Auto (%1$s)</string>
+    <string name="cast_subtitles">Subtitles</string>
+    <string name="cast_subtitles_off">Subtitles off</string>
+    <string name="cast_subtitles_hint">If the subtitles do not appear, turn them on in the subtitle settings of the TV</string>
 </resources>

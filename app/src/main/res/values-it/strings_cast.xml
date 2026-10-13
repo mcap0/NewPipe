@@ -32,4 +32,18 @@
     <string name="cast_log_title">Log Trasmetti a TV</string>
     <string name="cast_log_summary">Registro tecnico degli ultimi tentativi, da allegare a una segnalazione</string>
     <string name="cast_log_empty">Il log è vuoto</string>
+
+    <string name="cast_play_now">Riproduci ora sul TV</string>
+    <string name="cast_add_to_queue">Aggiungi alla coda del TV</string>
+    <string name="cast_added_to_queue">Aggiunto alla coda del TV</string>
+    <string name="cast_open_controller">Apri i controlli del TV</string>
+    <string name="cast_other_tv">Trasmetti a un altro TV</string>
+    <string name="cast_next">Successivo</string>
+    <string name="cast_queue">Coda</string>
+    <string name="cast_quality">Qualità</string>
+    <string name="cast_quality_auto">Automatica</string>
+    <string name="cast_quality_auto_current">Automatica (%1$s)</string>
+    <string name="cast_subtitles">Sottotitoli</string>
+    <string name="cast_subtitles_off">Sottotitoli disattivati</string>
+    <string name="cast_subtitles_hint">Se i sottotitoli non compaiono, attivali nelle impostazioni dei sottotitoli del TV</string>
 </resources>

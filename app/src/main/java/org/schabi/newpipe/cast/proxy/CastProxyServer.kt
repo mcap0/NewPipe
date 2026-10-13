@@ -80,7 +80,11 @@ class CastProxyServer(
         val url: String,
         val mimeType: String,
         val muxer: LiveTsMuxer? = null,
-        val dlnaFeatures: String = DLNA_CONTENT_FEATURES
+        val dlnaFeatures: String = DLNA_CONTENT_FEATURES,
+        /** content kept in memory (subtitles), served instead of [url] */
+        val bytes: ByteArray? = null,
+        /** subtitles announced with the Samsung `CaptionInfo.sec` header */
+        val captionUrl: String? = null
     )
 
     private val entries = ConcurrentHashMap<String, Entry>()
@@ -136,7 +140,14 @@ class CastProxyServer(
      *
      * @return the URL to give to the TV
      */
-    fun register(url: String, mimeType: String): String = add(Entry(url, mimeType))
+    fun register(url: String, mimeType: String, captionUrl: String? = null): String = add(Entry(url, mimeType, captionUrl = captionUrl))
+
+    /**
+     * Makes [content] (e.g. SRT subtitles) available through the proxy.
+     *
+     * @return the URL to give to the TV
+     */
+    fun registerContent(content: ByteArray, mimeType: String, extension: String): String = add(Entry("", mimeType, bytes = content), extension)
 
     /**
      * Makes the video and audio streams of [tracks] available as a single MPEG-TS stream, muxed
@@ -145,7 +156,10 @@ class CastProxyServer(
      * @param format the MIME type and DLNA profile the TV accepts
      * @return the URL to give to the TV
      */
-    fun registerMux(tracks: CastDash, format: TsFormat): String = add(Entry(tracks.video.url, format.mimeType, LiveTsMuxer(upstream, tracks), format.dlnaFeatures), "ts")
+    fun registerMux(tracks: CastDash, format: TsFormat, captionUrl: String? = null): String = add(
+        Entry(tracks.video.url, format.mimeType, LiveTsMuxer(upstream, tracks), format.dlnaFeatures, captionUrl = captionUrl),
+        "ts"
+    )
 
     private fun add(entry: Entry, extension: String = extensionFor(entry.mimeType)): String {
         val token = ByteArray(12).also { random.nextBytes(it) }
@@ -212,6 +226,14 @@ class CastProxyServer(
             handleMux(request, entry, it, output)
             return
         }
+        entry.bytes?.let {
+            writeHeaders(output, 200, "OK", entry.mimeType, it.size.toLong(), null)
+            if (request.method == "GET") {
+                output.write(it)
+            }
+            output.flush()
+            return
+        }
 
         val range = try {
             HttpRange.parse(request.header("Range"))
@@ -252,7 +274,7 @@ class CastProxyServer(
                     } else {
                         response.contentLength
                     }
-                    writeHeaders(output, 200, "OK", entry.mimeType, total, null)
+                    writeHeaders(output, 200, "OK", entry.mimeType, total, null, entry.captionUrl)
                 }
 
                 else -> {
@@ -264,7 +286,8 @@ class CastProxyServer(
                         if (partial) "Partial Content" else "OK",
                         entry.mimeType,
                         response.contentLength,
-                        if (partial) response.contentRange else null
+                        if (partial) response.contentRange else null,
+                        entry.captionUrl
                     )
                     if (!isHead) {
                         response.body?.let { copy(it, output) }
@@ -288,7 +311,7 @@ class CastProxyServer(
             return
         }
         val start = startSeconds(request.path)
-        writeStreamHeaders(output, entry.mimeType, entry.dlnaFeatures)
+        writeStreamHeaders(output, entry.mimeType, entry.dlnaFeatures, entry.captionUrl)
         if (request.method == "HEAD") {
             output.flush()
             return
@@ -303,10 +326,11 @@ class CastProxyServer(
         }
     }
 
-    private fun writeStreamHeaders(output: OutputStream, contentType: String, dlnaFeatures: String) {
+    private fun writeStreamHeaders(output: OutputStream, contentType: String, dlnaFeatures: String, captionUrl: String?) {
         val headers = "HTTP/1.1 200 OK\r\n" +
             "Content-Type: $contentType\r\n" +
             "transferMode.dlna.org: Streaming\r\n" +
+            captionHeader(captionUrl) +
             "contentFeatures.dlna.org: $dlnaFeatures\r\n" +
             "Server: $SERVER\r\n" +
             "Connection: close\r\n" +
@@ -321,7 +345,8 @@ class CastProxyServer(
         reason: String,
         contentType: String,
         contentLength: Long,
-        contentRange: String?
+        contentRange: String?,
+        captionUrl: String? = null
     ) {
         val headers = StringBuilder()
             .append("HTTP/1.1 ").append(code).append(' ').append(reason).append("\r\n")
@@ -333,7 +358,8 @@ class CastProxyServer(
         if (contentRange != null) {
             headers.append("Content-Range: ").append(contentRange).append("\r\n")
         }
-        headers.append("transferMode.dlna.org: Streaming\r\n")
+        headers.append(captionHeader(captionUrl))
+            .append("transferMode.dlna.org: Streaming\r\n")
             .append("contentFeatures.dlna.org: ").append(DLNA_CONTENT_FEATURES).append("\r\n")
             .append("Server: ").append(SERVER).append("\r\n")
             .append("Connection: close\r\n")
@@ -341,6 +367,8 @@ class CastProxyServer(
         CastLog.d("Proxy -> ${headers.toString().trim()}")
         output.write(headers.toString().toByteArray(StandardCharsets.ISO_8859_1))
     }
+
+    private fun captionHeader(captionUrl: String?) = if (captionUrl != null) "CaptionInfo.sec: $captionUrl\r\n" else ""
 
     private fun writeSimple(output: OutputStream, code: Int, reason: String, extraHeaders: String = "") {
         CastLog.d("Proxy -> HTTP $code $reason")

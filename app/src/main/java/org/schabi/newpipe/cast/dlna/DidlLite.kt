@@ -27,7 +27,9 @@ data class CastMedia(
     val thumbnailUrl: String? = null,
     val dash: CastDash? = null,
     /** The fourth field of the protocolInfo, null for [DidlLite.DLNA_FEATURES]. */
-    val dlnaFeatures: String? = null
+    val dlnaFeatures: String? = null,
+    /** URL of SubRip subtitles for the TV, null for none */
+    val subtitleUrl: String? = null
 ) : Serializable {
     companion object {
         private const val serialVersionUID = 1L
@@ -76,6 +78,9 @@ object DidlLite {
      */
     const val DLNA_FEATURES = "*"
 
+    const val SRT_MIME_TYPE = "text/srt"
+    private const val SEC_NAMESPACE = "http://www.sec.co.kr/"
+
     fun protocolInfo(mimeType: String, features: String? = null) = "http-get:*:$mimeType:${features ?: DLNA_FEATURES}"
 
     /**
@@ -92,20 +97,33 @@ object DidlLite {
         val albumArt = media.thumbnailUrl?.let {
             "<upnp:albumArtURI>${XmlUtils.escape(it)}</upnp:albumArtURI>"
         }.orEmpty()
+        // Samsung TVs read the sec: elements, other renderers a second res of type text/srt
+        val subtitles = media.subtitleUrl?.let { XmlUtils.escape(it) }
+        val captionInfo = subtitles?.let {
+            "<sec:CaptionInfoEx sec:type=\"srt\">$it</sec:CaptionInfoEx>" +
+                "<sec:CaptionInfo sec:type=\"srt\">$it</sec:CaptionInfo>"
+        }.orEmpty()
+        val subtitleRes = subtitles?.let {
+            "<res protocolInfo=\"${XmlUtils.escape(protocolInfo(SRT_MIME_TYPE))}\">$it</res>"
+        }.orEmpty()
 
         return "<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\"" +
             " xmlns:dc=\"http://purl.org/dc/elements/1.1/\"" +
             " xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\"" +
-            " xmlns:dlna=\"urn:schemas-dlna-org:metadata-1-0/\">" +
+            " xmlns:dlna=\"urn:schemas-dlna-org:metadata-1-0/\"" +
+            (if (subtitles != null) " xmlns:sec=\"$SEC_NAMESPACE\"" else "") +
+            ">" +
             "<item id=\"${XmlUtils.escape(itemId)}\" parentID=\"-1\" restricted=\"1\">" +
             "<dc:title>$title</dc:title>" +
             "<dc:creator>$uploader</dc:creator>" +
             "<upnp:artist>$uploader</upnp:artist>" +
             "<upnp:class>object.item.videoItem</upnp:class>" +
             albumArt +
+            captionInfo +
             "<res protocolInfo=\"${XmlUtils.escape(protocolInfo(media.mimeType, media.dlnaFeatures))}\"$duration>" +
             XmlUtils.escape(media.url) +
             "</res>" +
+            subtitleRes +
             "</item>" +
             "</DIDL-Lite>"
     }

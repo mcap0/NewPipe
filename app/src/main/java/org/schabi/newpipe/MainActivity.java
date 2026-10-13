@@ -60,6 +60,7 @@ import androidx.preference.PreferenceManager;
 
 import com.google.android.material.bottomsheet.BottomSheetBehavior;
 
+import org.schabi.newpipe.cast.CastBar;
 import org.schabi.newpipe.databinding.ActivityMainBinding;
 import org.schabi.newpipe.databinding.DrawerHeaderBinding;
 import org.schabi.newpipe.databinding.DrawerLayoutBinding;
@@ -172,6 +173,7 @@ public class MainActivity extends AppCompatActivity {
                 .getHeaderView(0));
         toolbarLayoutBinding = mainBinding.toolbarLayout;
         setContentView(mainBinding.getRoot());
+        CastBar.bind(this, mainBinding.castBarLayout, mainBinding.fragmentHolder);
 
         if (getSupportFragmentManager().getBackStackEntryCount() == 0) {
             initFragments();

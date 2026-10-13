@@ -212,6 +212,22 @@ class CastProxyServerTest {
         assertEquals(0.0, CastProxyServer.startSeconds("/v/abc.ts?t=-4"), 0.0)
     }
 
+    @Test
+    fun servesContentAndAnnouncesCaptions() {
+        val srt = "1\n00:00:01,000 --> 00:00:02,000\nHi\n\n".toByteArray(StandardCharsets.UTF_8)
+        val subtitleUrl = server.registerContent(srt, "text/srt", "srt")
+        assertTrue(subtitleUrl.endsWith(".srt"))
+        val subtitles = open(subtitleUrl)
+        assertEquals(200, subtitles.responseCode)
+        assertEquals("text/srt", subtitles.contentType)
+        assertArrayEquals(srt, subtitles.inputStream.readBytes())
+
+        val video = open(server.register(REAL_URL, "video/mp4", subtitleUrl), method = "HEAD")
+        assertEquals(200, video.responseCode)
+        assertEquals(subtitleUrl, video.getHeaderField("CaptionInfo.sec"))
+        assertEquals(null, open(method = "HEAD").getHeaderField("CaptionInfo.sec"))
+    }
+
     companion object {
         private const val REAL_URL = "https://rr1---sn-xyz.googlevideo.com/videoplayback?itag=18&x=1"
     }

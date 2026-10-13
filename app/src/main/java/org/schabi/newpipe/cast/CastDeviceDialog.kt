@@ -10,7 +10,6 @@ import android.content.Context
 import android.content.Intent
 import android.net.wifi.WifiManager
 import android.os.Bundle
-import android.util.Log
 import android.view.LayoutInflater
 import android.widget.ArrayAdapter
 import androidx.appcompat.app.AlertDialog
@@ -23,12 +22,10 @@ import io.reactivex.rxjava3.disposables.Disposable
 import io.reactivex.rxjava3.schedulers.Schedulers
 import org.schabi.newpipe.R
 import org.schabi.newpipe.cast.dlna.CastLog
-import org.schabi.newpipe.cast.dlna.CastMedia
 import org.schabi.newpipe.cast.dlna.DlnaDevice
 import org.schabi.newpipe.cast.dlna.DlnaDiscovery
 import org.schabi.newpipe.cast.dlna.LocalNetwork
 import org.schabi.newpipe.databinding.DialogCastDevicesBinding
-import org.schabi.newpipe.local.history.HistoryRecordManager
 import org.schabi.newpipe.util.ExtractorHelper
 
 /**
@@ -142,14 +139,23 @@ class CastDeviceDialog : DialogFragment() {
     }
 
     private fun onDeviceChosen(device: DlnaDevice) {
-        val context = requireContext()
+        val context = requireContext().applicationContext
         val arguments = requireArguments()
-
-        @Suppress("DEPRECATION")
-        val media = arguments.getSerializable(ARG_MEDIA) as CastMedia
-        CastService.start(context, device, media)
-        markAsViewed(context.applicationContext, arguments.getInt(ARG_SERVICE_ID), arguments.getString(ARG_URL))
-        startActivity(Intent(context, CastControllerActivity::class.java))
+        val serviceId = arguments.getInt(ARG_SERVICE_ID)
+        val url = arguments.getString(ARG_URL).orEmpty()
+        val item = pendingItem?.takeIf { it.info.serviceId == serviceId && it.info.url == url }
+        if (item != null) {
+            startCasting(context, device, item)
+        } else {
+            // the dialog was recreated, e.g. after the process was killed: the info is in the cache
+            ExtractorHelper.getStreamInfo(serviceId, url, false)
+                .subscribeOn(Schedulers.io())
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe(
+                    { startCasting(context, device, CastItem(it)) },
+                    { CastLog.e("Could not load the video to cast", it) }
+                )
+        }
         dismiss()
     }
 
@@ -157,12 +163,23 @@ class CastDeviceDialog : DialogFragment() {
 
     companion object {
         const val TAG = "CastDeviceDialog"
-        private const val ARG_MEDIA = "media"
         private const val ARG_SERVICE_ID = "service_id"
         private const val ARG_URL = "url"
 
-        fun newInstance(media: CastMedia, serviceId: Int, url: String) = CastDeviceDialog().apply {
-            arguments = bundleOf(ARG_MEDIA to media, ARG_SERVICE_ID to serviceId, ARG_URL to url)
+        /** The video to cast: it is too big for the arguments. */
+        private var pendingItem: CastItem? = null
+
+        fun newInstance(item: CastItem) = CastDeviceDialog().apply {
+            pendingItem = item
+            arguments = bundleOf(ARG_SERVICE_ID to item.info.serviceId, ARG_URL to item.info.url)
+        }
+
+        private fun startCasting(context: Context, device: DlnaDevice, item: CastItem) {
+            pendingItem = null
+            CastService.start(context, device, item)
+            context.startActivity(
+                Intent(context, CastControllerActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
         }
 
         /** Without this lock many phones drop incoming multicast and SSDP answers. */
@@ -177,21 +194,6 @@ class CastDeviceDialog : DialogFragment() {
                 CastLog.w("Could not acquire the multicast lock", e)
                 null
             }
-        }
-
-        /** Adds the video to the watch history, as if it was played in NewPipe. */
-        private fun markAsViewed(context: Context, serviceId: Int, url: String?) {
-            if (url == null) {
-                return
-            }
-            // the info is already in the cache, it was loaded to show the video
-            ExtractorHelper.getStreamInfo(serviceId, url, false)
-                .flatMapMaybe { HistoryRecordManager(context).onViewed(it) }
-                .subscribeOn(Schedulers.io())
-                .subscribe(
-                    { },
-                    { Log.w(TAG, "Could not add the cast video to the history", it) }
-                )
         }
     }
 }
