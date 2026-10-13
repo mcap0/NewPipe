@@ -6,11 +6,6 @@
 package org.schabi.newpipe.cast.dlna
 
 import java.io.IOException
-import java.util.concurrent.TimeUnit
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 
 /** State of the renderer, from GetTransportInfo. */
 enum class TransportState {
@@ -39,11 +34,10 @@ data class PositionInfo(val positionSeconds: Long, val durationSeconds: Long)
 /**
  * Blocking client for the AVTransport and RenderingControl services of a [DlnaDevice].
  * Every request and answer is written to [CastLog]. Call the methods from a background thread.
+ *
+ * Requests go through [LanHttp], see there why OkHttp is not used for the local network.
  */
-class DlnaClient(
-    private val device: DlnaDevice,
-    private val httpClient: OkHttpClient = defaultHttpClient
-) {
+class DlnaClient(private val device: DlnaDevice) {
     fun setAvTransportUri(media: CastMedia) {
         val metadata = DidlLite.build(media)
         avTransport(
@@ -128,22 +122,22 @@ class DlnaClient(
         if (logAnswer) {
             CastLog.d("SOAP -> $action @ $controlUrl\n$envelope")
         }
-        val request = Request.Builder()
-            .url(controlUrl)
-            .header("SOAPACTION", Soap.soapActionHeader(serviceType, action))
-            .header("User-Agent", USER_AGENT)
-            .header("Connection", "close")
-            .post(envelope.toByteArray(Charsets.UTF_8).toRequestBody(SOAP_MEDIA_TYPE))
-            .build()
-
         try {
-            httpClient.newCall(request).execute().use { response ->
-                val body = response.body.string()
-                if (logAnswer || !response.isSuccessful) {
-                    CastLog.d("SOAP <- $action HTTP ${response.code}\n$body")
-                }
-                return Soap.parseResponse(action, response.code, body)
+            val response = LanHttp.request(
+                controlUrl,
+                method = "POST",
+                headers = listOf(
+                    "Content-Type" to Soap.CONTENT_TYPE,
+                    "SOAPACTION" to Soap.soapActionHeader(serviceType, action),
+                    "User-Agent" to USER_AGENT
+                ),
+                body = envelope.toByteArray(Charsets.UTF_8)
+            )
+            val body = response.bodyAsString()
+            if (logAnswer || !response.isSuccessful) {
+                CastLog.d("SOAP <- $action HTTP ${response.code}\n$body")
             }
+            return Soap.parseResponse(action, response.code, body)
         } catch (e: UpnpException) {
             CastLog.e("SOAP $action: UPnP error ${e.errorCode} ${e.errorDescription}")
             throw e
@@ -156,31 +150,18 @@ class DlnaClient(
     companion object {
         private val INSTANCE_ID = "InstanceID" to "0"
         private val CHANNEL = "Channel" to "Master"
-        private val SOAP_MEDIA_TYPE = Soap.CONTENT_TYPE.toMediaType()
         const val USER_AGENT = "Android/1.0 UPnP/1.0 NewPipe/1.0"
 
-        val defaultHttpClient: OkHttpClient by lazy {
-            OkHttpClient.Builder()
-                .connectTimeout(5, TimeUnit.SECONDS)
-                .readTimeout(10, TimeUnit.SECONDS)
-                .writeTimeout(10, TimeUnit.SECONDS)
-                .build()
-        }
-
         /** Downloads a device description and logs it. */
-        fun fetchDescription(location: String, httpClient: OkHttpClient = defaultHttpClient): String {
-            val request = Request.Builder()
-                .url(location)
-                .header("User-Agent", USER_AGENT)
-                .build()
-            httpClient.newCall(request).execute().use { response ->
-                val body = response.body.string()
-                CastLog.d("Device description from $location (HTTP ${response.code}):\n$body")
-                if (!response.isSuccessful) {
-                    throw IOException("HTTP ${response.code} while downloading $location")
-                }
-                return body
+        @Throws(IOException::class)
+        fun fetchDescription(location: String): String {
+            val response = LanHttp.request(location, headers = listOf("User-Agent" to USER_AGENT))
+            val body = response.bodyAsString()
+            CastLog.d("Device description from $location (HTTP ${response.code}):\n$body")
+            if (!response.isSuccessful) {
+                throw IOException("HTTP ${response.code} while downloading $location")
             }
+            return body
         }
     }
 }

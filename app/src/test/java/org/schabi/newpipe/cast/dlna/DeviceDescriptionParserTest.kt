@@ -155,7 +155,7 @@ class DeviceDescriptionParserTest {
 
     @Test
     fun descriptionWithBomAndEscapedNameIsParsed() {
-        val xml = "﻿" + description("/avt", friendlyName = "Tom &amp; Jerry&apos;s TV")
+        val xml = "\uFEFF" + description("/avt", friendlyName = "Tom &amp; Jerry&apos;s TV")
         val device = DeviceDescriptionParser.parse(xml, "http://10.0.0.4:9197/dmr")!!
         assertEquals("Tom & Jerry's TV", device.friendlyName)
     }

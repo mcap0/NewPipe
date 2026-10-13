@@ -19,6 +19,7 @@ import org.xml.sax.InputSource
  * code can be tested with plain JVM unit tests.
  */
 object XmlUtils {
+    private const val BYTE_ORDER_MARK = '\uFEFF'
 
     /**
      * Escapes a string so that it can be put in XML text or in an attribute value.
@@ -81,7 +82,7 @@ object XmlUtils {
         trySetFeature(factory, "http://xml.org/sax/features/external-parameter-entities", false)
         factory.isExpandEntityReferences = false
         // some devices send a BOM or whitespace before the XML declaration
-        val cleaned = xml.trimStart('', ' ', '\n', '\r', '\t')
+        val cleaned = xml.trimStart(BYTE_ORDER_MARK, ' ', '\n', '\r', '\t')
         return factory.newDocumentBuilder().parse(InputSource(StringReader(cleaned)))
     }
 
