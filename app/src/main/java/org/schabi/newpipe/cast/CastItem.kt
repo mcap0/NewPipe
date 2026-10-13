@@ -38,6 +38,12 @@ class CastItem(val info: StreamInfo) {
     @Volatile
     var handOffSeconds: Long? = null
 
+    /**
+     * A lower resolution chosen automatically because the TV could not play a higher one,
+     * null if none. It wins over the resolution wanted by the user for this video.
+     */
+    var fallbackHeight: Int? = null
+
     private val progressive = info.videoStreams.map { toCandidate(it) }
     private val videoOnly = info.videoOnlyStreams.map { toCandidate(it) }
     private val audios = info.audioStreams.map { toAudioCandidate(it) }

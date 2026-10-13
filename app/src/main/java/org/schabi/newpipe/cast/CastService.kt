@@ -125,6 +125,13 @@ class CastService : Service() {
     private var sinkProtocolInfoLoaded = false
     private var polling: ScheduledFuture<*>? = null
     private var hasPlayed = false
+
+    // when the TV was asked to play, to notice a video it cannot play
+    private var playRequestedAt = 0L
+    private var lastLoggedTransport: TransportState? = null
+
+    // shown while the video plays at a lower resolution than wanted
+    private var fallbackNotice: String? = null
     private var stoppedPolls = 0
     private var failedPolls = 0
     private var polls = 0
@@ -312,10 +319,11 @@ class CastService : Service() {
         val start = (startSeconds ?: handOff ?: savedPosition(item)).coerceAtLeast(0)
         lastPosition = start
         if (isNewVideo) {
+            fallbackNotice = null
             markAsViewed(item)
         }
 
-        val choice = item.choose(wantedHeight, wantedAudioTrackId)
+        val choice = item.choose(item.fallbackHeight ?: wantedHeight, wantedAudioTrackId)
         if (choice == null) {
             fail(getString(R.string.cast_error_no_stream))
             return false
@@ -335,10 +343,10 @@ class CastService : Service() {
         try {
             // Some TVs refuse a new URI while they are playing something else
             val state = runCatching { dlna.getTransportInfo() }.getOrNull()
-            if (state == TransportState.PLAYING || state == TransportState.PAUSED) {
+            if (state == TransportState.PLAYING || state == TransportState.PAUSED || state == TransportState.TRANSITIONING) {
                 runCatching { dlna.stop() }
             }
-            dlna.setAvTransportUri(castMedia)
+            setUriWithRetries(dlna, castMedia)
             playWithRetries(dlna)
         } catch (e: UpnpException) {
             val error = "${e.errorCode} ${e.errorDescription}"
@@ -355,7 +363,50 @@ class CastService : Service() {
             fail(getString(R.string.cast_error_unreachable))
             return false
         }
+        playRequestedAt = System.currentTimeMillis()
+        lastLoggedTransport = null
         publish(currentState.copy(status = CastStatus.BUFFERING))
+        return true
+    }
+
+    /**
+     * While it is still switching from the previous video, the TV answers SetAVTransportURI
+     * with 701 "Transition not available": stop it and try again.
+     */
+    private fun setUriWithRetries(dlna: DlnaClient, media: CastMedia) {
+        var attempt = 0
+        while (true) {
+            try {
+                dlna.setAvTransportUri(media)
+                return
+            } catch (e: UpnpException) {
+                if (e.errorCode != ERROR_TRANSITION_NOT_AVAILABLE || ++attempt >= PLAY_ATTEMPTS) {
+                    throw e
+                }
+                CastLog.d("The TV is busy, stopping it and retrying in 1 second")
+                runCatching { dlna.stop() }
+                Thread.sleep(1000)
+            }
+        }
+    }
+
+    /**
+     * The TV did not start the video: it often cannot decode some streams (e.g. high H.264
+     * levels), so the video is sent again at the next lower resolution.
+     *
+     * @return false if there is no lower resolution
+     */
+    private fun tryLowerQuality(reason: String): Boolean {
+        val item = queue.getOrNull(queueIndex) ?: return false
+        val current = currentChoice?.height ?: return false
+        val lower = item.qualities.filter { it < current }.maxOrNull() ?: return false
+        CastLog.w("The TV did not play ${current}p ($reason), trying ${lower}p")
+        item.fallbackHeight = lower
+        val start = lastPosition.coerceAtLeast(0)
+        if (playCurrent(startSeconds = start, isNewVideo = false)) {
+            fallbackNotice = getString(R.string.cast_quality_fallback, "${current}p", "${lower}p")
+            publish(currentState.copy(error = fallbackNotice))
+        }
         return true
     }
 
@@ -475,8 +526,29 @@ class CastService : Service() {
                 TransportState.STOPPED, TransportState.NO_MEDIA -> CastStatus.STOPPED
                 TransportState.UNKNOWN -> currentState.status
             }
+            if (transport != lastLoggedTransport) {
+                CastLog.d("TV state: $transport, position ${position.positionSeconds}s")
+                lastLoggedTransport = transport
+            }
             if (status == CastStatus.PLAYING || status == CastStatus.PAUSED) {
                 hasPlayed = true
+            }
+
+            if (!hasPlayed) {
+                val waited = System.currentTimeMillis() - playRequestedAt
+                stoppedPolls = if (status == CastStatus.STOPPED && waited > STOPPED_GRACE_MILLIS) stoppedPolls + 1 else 0
+                val reason = when {
+                    stoppedPolls >= STOPPED_POLLS_BEFORE_END -> "it stopped"
+                    waited > START_TIMEOUT_MILLIS -> "nothing after ${waited / 1000}s"
+                    else -> null
+                }
+                if (reason != null) {
+                    stoppedPolls = 0
+                    if (!tryLowerQuality(reason)) {
+                        fail(getString(R.string.cast_error_cannot_play))
+                    }
+                    return
+                }
             }
 
             if (status == CastStatus.PLAYING && pendingSeek > 0) {
@@ -502,7 +574,7 @@ class CastService : Service() {
                     } else {
                         position.durationSeconds.takeIf { it > 0 } ?: currentState.durationSeconds
                     },
-                    error = null
+                    error = fallbackNotice
                 )
             )
 
@@ -511,8 +583,10 @@ class CastService : Service() {
             }
 
             // the video ended, or the TV was used for something else
-            stoppedPolls = if (hasPlayed && status == CastStatus.STOPPED) stoppedPolls + 1 else 0
-            if (stoppedPolls >= STOPPED_POLLS_BEFORE_END) {
+            if (hasPlayed) {
+                stoppedPolls = if (status == CastStatus.STOPPED) stoppedPolls + 1 else 0
+            }
+            if (hasPlayed && stoppedPolls >= STOPPED_POLLS_BEFORE_END) {
                 onTvStopped()
             }
         } catch (e: Exception) {
@@ -583,6 +657,8 @@ class CastService : Service() {
             return
         }
         wantedHeight = height
+        queue.getOrNull(queueIndex)?.fallbackHeight = null
+        fallbackNotice = null
         restartCurrent()
     }
 
@@ -636,8 +712,9 @@ class CastService : Service() {
         if (liveMedia != null) {
             // a live stream cannot be seeked: the TV gets a new one starting at that time
             try {
-                dlna.setAvTransportUri(liveMediaAt(positionSeconds, server))
+                setUriWithRetries(dlna, liveMediaAt(positionSeconds, server))
                 playWithRetries(dlna)
+                playRequestedAt = System.currentTimeMillis()
                 lastPosition = positionSeconds
                 hasPlayed = false
                 stoppedPolls = 0
@@ -917,6 +994,8 @@ class CastService : Service() {
         private const val ERROR_TRANSITION_NOT_AVAILABLE = 701
         private const val PLAY_ATTEMPTS = 4
         private const val STOPPED_POLLS_BEFORE_END = 3
+        private const val START_TIMEOUT_MILLIS = 25_000L
+        private const val STOPPED_GRACE_MILLIS = 5_000L
         private const val FAILED_POLLS_BEFORE_ERROR = 8
         private const val SAVE_EVERY_POLLS = 5
         private const val END_MARGIN_SECONDS = 15
