@@ -69,11 +69,13 @@ fun interface Upstream {
  * token, so the server cannot be used by others on the network as an open proxy.
  *
  * @param upstream how to download the real content
+ * @param dashUpstream how to download the separate video and audio streams which are muxed
  * @param bindAddress the local address to listen on (the Wi-Fi address of the phone)
  */
 class CastProxyServer(
     private val upstream: Upstream,
-    private val bindAddress: InetAddress
+    private val bindAddress: InetAddress,
+    private val dashUpstream: Upstream = upstream
 ) {
     /** A registered URL, or separate video and audio streams muxed live if [muxer] is not null. */
     private class Entry(
@@ -157,7 +159,7 @@ class CastProxyServer(
      * @return the URL to give to the TV
      */
     fun registerMux(tracks: CastDash, format: TsFormat, captionUrl: String? = null): String = add(
-        Entry(tracks.video.url, format.mimeType, LiveTsMuxer(upstream, tracks), format.dlnaFeatures, captionUrl = captionUrl),
+        Entry(tracks.video.url, format.mimeType, LiveTsMuxer(dashUpstream, tracks), format.dlnaFeatures, captionUrl = captionUrl),
         "ts"
     )
 

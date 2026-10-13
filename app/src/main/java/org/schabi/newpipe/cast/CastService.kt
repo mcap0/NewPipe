@@ -276,7 +276,9 @@ class CastService : Service() {
 
         try {
             val local = LocalNetwork.find() ?: throw IllegalStateException("No local network address")
-            proxy = CastProxyServer(OkHttpUpstream(), local.address).also { it.start() }
+            // the separate DASH streams are requested like NewPipe's player does, see YoutubeRange
+            proxy = CastProxyServer(OkHttpUpstream(), local.address, OkHttpUpstream(useRangeParameter = true))
+                .also { it.start() }
         } catch (e: Exception) {
             CastLog.e("Could not start the local proxy", e)
             fail(getString(R.string.cast_error_no_wifi))

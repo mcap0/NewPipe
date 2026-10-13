@@ -91,7 +91,8 @@ class LiveTsMuxer(private val upstream: Upstream, private val tracks: CastDash) 
         fun seconds(time: Long) = time.toDouble() / track.timescale
     }
 
-    private fun mux(video: Cursor, audio: Cursor, baseSeconds: Double, output: OutputStream) {
+    private fun mux(video: Cursor, audio: Cursor, baseSeconds: Double, rawOutput: OutputStream) {
+        val output = CountingOutputStream(rawOutput)
         val writer = TsWriter(output)
         val avc = video.track.codec as CodecConfig.Avc
         val aac = audio.track.codec as CodecConfig.Aac
@@ -101,8 +102,19 @@ class LiveTsMuxer(private val upstream: Upstream, private val tracks: CastDash) 
         // MP4 files hide the B-frame delay of the first frame with an edit list: without it,
         // the video would be late compared to the audio
         val videoShift = video.peek()?.let { video.seconds(it.compositionOffset.toLong()) } ?: 0.0
+        val firstVideo = video.peek()
+        val firstAudio = audio.peek()
+        CastLog.d(
+            "Mux start: base ${"%.3f".format(baseSeconds)} s, first video sample at " +
+                (firstVideo?.let { "${"%.3f".format(video.seconds(it.decodeTime))} s (+${"%.3f".format(videoShift)} s)" } ?: "none") +
+                ", first audio sample at " + (firstAudio?.let { "%.3f".format(audio.seconds(it.decodeTime)) + " s" } ?: "none") +
+                ", ${avc.sps.size} SPS, ${avc.pps.size} PPS, AAC type ${aac.objectType} index ${aac.frequencyIndex} channels ${aac.channels}"
+        )
+        val startedAt = System.currentTimeMillis()
+        var nextReport = PROGRESS_SECONDS
         var videoFrames = 0L
         var audioFrames = 0L
+        var skippedAudio = 0L
         while (true) {
             val videoSample = video.peek()
             val audioSample = audio.peek()
@@ -116,16 +128,35 @@ class LiveTsMuxer(private val upstream: Upstream, private val tracks: CastDash) 
                 val dts = clock(videoTime)
                 val pts = clock(video.seconds(sample.decodeTime + sample.compositionOffset) - videoShift)
                 val (annexB, isKeyframe) = toAnnexB(sample.data, avc)
+                if (videoFrames == 0L) {
+                    CastLog.d(
+                        "Mux first video frame: keyframe $isKeyframe, NAL types ${nalTypes(sample.data, avc)}, " +
+                            "PTS $pts, DTS $dts, PCR ${(dts - START_DELAY).coerceAtLeast(0)}, $skippedAudio audio frames skipped"
+                    )
+                }
                 if (isKeyframe) writer.writeTables()
                 writer.writeVideo(annexB, pts, dts, isKeyframe, (dts - START_DELAY).coerceAtLeast(0))
                 writer.flush()
                 videoFrames++
+                val sent = videoTime - baseSeconds
+                if (sent >= nextReport) {
+                    nextReport += PROGRESS_SECONDS
+                    CastLog.d(
+                        "Mux progress: ${sent.toLong()} s of video, $videoFrames video and $audioFrames audio frames, " +
+                            "${output.count / 1024} KB sent in ${(System.currentTimeMillis() - startedAt) / 1000} s"
+                    )
+                }
             } else {
                 val sample = audio.next()!!
                 // audio before the first video frame would have a negative time
                 if (audioTime >= baseSeconds) {
+                    if (audioFrames == 0L) {
+                        CastLog.d("Mux first audio frame: PTS ${clock(audioTime)}, after $videoFrames video frames")
+                    }
                     writer.writeAudio(adts(sample.data, aac), clock(audioTime))
                     audioFrames++
+                } else {
+                    skippedAudio++
                 }
             }
         }
@@ -133,9 +164,30 @@ class LiveTsMuxer(private val upstream: Upstream, private val tracks: CastDash) 
         CastLog.d("TS mux finished: $videoFrames video frames, $audioFrames audio frames")
     }
 
+    /** Counts the bytes sent to the TV, for the log. */
+    private class CountingOutputStream(private val output: OutputStream) : OutputStream() {
+        var count = 0L
+            private set
+
+        override fun write(b: Int) {
+            output.write(b)
+            count++
+        }
+
+        override fun write(b: ByteArray, off: Int, len: Int) {
+            output.write(b, off, len)
+            count += len
+        }
+
+        override fun flush() = output.flush()
+    }
+
     companion object {
         /** Like ffmpeg: timestamps start 0.7 s after the clock, room for B-frame reordering. */
         const val START_DELAY = 63_000L
+
+        /** How often the progress of the stream is logged, in seconds of video. */
+        private const val PROGRESS_SECONDS = 10.0
 
         private const val NAL_IDR = 5
         private const val NAL_SPS = 7
@@ -187,6 +239,23 @@ class LiveTsMuxer(private val upstream: Upstream, private val tracks: CastDash) 
                 }
             }
             return out.toByteArray() to isKeyframe
+        }
+
+        /** @return the types of the NAL units of an MP4 sample, for the log */
+        fun nalTypes(sample: ByteArray, avc: CodecConfig.Avc): List<Int> {
+            val types = ArrayList<Int>()
+            var position = 0
+            while (position + avc.nalLengthSize < sample.size) {
+                var length = 0
+                for (i in 0 until avc.nalLengthSize) {
+                    length = (length shl 8) or (sample[position + i].toInt() and 0xFF)
+                }
+                position += avc.nalLengthSize
+                if (length <= 0 || position + length > sample.size) break
+                types.add(sample[position].toInt() and 0x1F)
+                position += length
+            }
+            return types
         }
 
         /** Prefixes a raw AAC frame with its ADTS header. */

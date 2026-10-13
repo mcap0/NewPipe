@@ -15,6 +15,7 @@ import org.schabi.newpipe.cast.dlna.CastLog
 import org.schabi.newpipe.cast.proxy.HttpRange
 import org.schabi.newpipe.cast.proxy.Upstream
 import org.schabi.newpipe.cast.proxy.UpstreamResponse
+import org.schabi.newpipe.cast.proxy.YoutubeRange
 import org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper.getVisionOsUserAgent
 import org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper.isVisionOsStreamingUrl
 import org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper.isWebStreamingUrl
@@ -27,7 +28,7 @@ import org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper.isWebS
  * client the URL was obtained with. This is the main reason the proxy is needed: a TV which
  * downloads the URL directly with a plain GET is often answered with HTTP 403.
  */
-class OkHttpUpstream : Upstream {
+class OkHttpUpstream(private val useRangeParameter: Boolean = false) : Upstream {
     private val requestNumber = AtomicInteger()
 
     private val client: OkHttpClient = DownloaderImpl.getInstance().client.newBuilder()
@@ -37,16 +38,20 @@ class OkHttpUpstream : Upstream {
 
     override fun open(url: String, range: HttpRange?): UpstreamResponse {
         val isVideoPlayback = url.contains("/videoplayback")
-        val requestUrl = if (isVideoPlayback && !url.contains("&rn=")) {
-            "$url&rn=${requestNumber.getAndIncrement()}"
+        val withRange = if (useRangeParameter) YoutubeRange.urlWithRange(url, range) else null
+        val baseUrl = withRange ?: url
+        val requestUrl = if (isVideoPlayback && !baseUrl.contains("&rn=")) {
+            "$baseUrl&rn=${requestNumber.getAndIncrement()}"
         } else {
-            url
+            baseUrl
         }
 
         val builder = Request.Builder()
             .url(requestUrl)
             .header("Accept-Encoding", "identity")
-        range?.let { builder.header("Range", it.toHeaderValue()) }
+        if (withRange == null) {
+            range?.let { builder.header("Range", it.toHeaderValue()) }
+        }
 
         if (isVisionOsStreamingUrl(requestUrl)) {
             builder.header("User-Agent", getVisionOsUserAgent(null))
@@ -65,15 +70,26 @@ class OkHttpUpstream : Upstream {
         }
 
         CastLog.d(
-            "Upstream -> ${if (isVideoPlayback) "POST" else "GET"} ${range?.toHeaderValue() ?: "whole file"} " +
-                requestUrl.take(LOGGED_URL_LENGTH) + "…"
+            "Upstream -> ${if (isVideoPlayback) "POST" else "GET"} ${range?.toHeaderValue() ?: "whole file"}" +
+                (if (withRange != null) " (as parameter) " else " ") + requestUrl.take(LOGGED_URL_LENGTH) + "…"
         )
         val response = client.newCall(builder.build()).execute()
         val body = response.body
+        if (!response.isSuccessful) {
+            CastLog.w("Upstream <- HTTP ${response.code} for ${range?.toHeaderValue() ?: "whole file"}")
+        }
+        // with the range parameter, the server answers 200 with only the bytes asked
+        val asPartial = withRange != null && response.code == 200
         return UpstreamResponse(
-            code = response.code,
+            code = if (asPartial) 206 else response.code,
             contentLength = body.contentLength(),
-            contentRange = response.header("Content-Range"),
+            contentRange = if (asPartial) {
+                val start = range!!.start!!
+                val length = body.contentLength().takeIf { it >= 0 } ?: (range.end!! - start + 1)
+                YoutubeRange.contentRange(url, start, length)
+            } else {
+                response.header("Content-Range")
+            },
             contentType = response.header("Content-Type"),
             body = body.byteStream(),
             onClose = { response.close() }

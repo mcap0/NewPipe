@@ -80,7 +80,14 @@ class RangedInputStream(
             return false
         }
         val end = position + chunkSize - 1
-        val response = upstream.open(url, HttpRange(position, end))
+        var response = upstream.open(url, HttpRange(position, end))
+        if (response.code >= 400 && response.code != 416) {
+            // e.g. a 403 now and then from googlevideo: once more before giving up
+            response.close()
+            CastLog.w("HTTP ${response.code} for range $position-$end, retrying")
+            Thread.sleep(RETRY_DELAY_MILLIS)
+            response = upstream.open(url, HttpRange(position, end))
+        }
         when (response.code) {
             206 -> {
                 val total = HttpRange.totalLengthFromContentRange(response.contentRange)
@@ -139,6 +146,7 @@ class RangedInputStream(
 
     companion object {
         const val DEFAULT_CHUNK_SIZE = 2L * 1024 * 1024
+        private const val RETRY_DELAY_MILLIS = 500L
 
         /** Downloads the bytes from [start] to [end] (both included). */
         fun readRange(upstream: Upstream, url: String, start: Long, end: Long): ByteArray {
