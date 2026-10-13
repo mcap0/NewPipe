@@ -6,7 +6,7 @@
 package org.schabi.newpipe.cast.dlna
 
 import java.net.NetworkInterface
-import java.util.concurrent.ConcurrentHashMap
+import java.util.Collections
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -27,8 +27,8 @@ object DlnaDiscovery {
         timeoutMillis: Long = 4000,
         onDevice: (DlnaDevice) -> Unit
     ) {
-        val seenLocations = ConcurrentHashMap.newKeySet<String>()
-        val seenDevices = ConcurrentHashMap.newKeySet<String>()
+        val seenLocations = Collections.synchronizedSet(HashSet<String>())
+        val seenDevices = Collections.synchronizedSet(HashSet<String>())
         val executor = Executors.newFixedThreadPool(DESCRIPTION_THREADS)
         try {
             Ssdp.search(networkInterface, timeoutMillis = timeoutMillis) { response ->

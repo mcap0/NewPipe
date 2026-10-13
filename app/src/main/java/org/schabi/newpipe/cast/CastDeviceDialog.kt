@@ -11,6 +11,7 @@ import android.content.Intent
 import android.net.wifi.WifiManager
 import android.os.Bundle
 import android.util.Log
+import android.view.LayoutInflater
 import android.widget.ArrayAdapter
 import androidx.appcompat.app.AlertDialog
 import androidx.core.os.bundleOf
@@ -44,7 +45,7 @@ class CastDeviceDialog : DialogFragment() {
     private var isSearching = false
 
     override fun onCreateDialog(savedInstanceState: Bundle?): Dialog {
-        _binding = DialogCastDevicesBinding.inflate(layoutInflater)
+        _binding = DialogCastDevicesBinding.inflate(LayoutInflater.from(requireContext()))
         adapter = ArrayAdapter(requireContext(), android.R.layout.simple_list_item_1, ArrayList())
         binding.castDeviceList.adapter = adapter
         binding.castDeviceList.setOnItemClickListener { _, _, position, _ ->
