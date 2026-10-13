@@ -27,6 +27,9 @@ import org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper.isWebS
  * `YoutubeHttpDataSource`): with a POST request, the `rn` parameter and the headers of the
  * client the URL was obtained with. This is the main reason the proxy is needed: a TV which
  * downloads the URL directly with a plain GET is often answered with HTTP 403.
+ *
+ * When googlevideo answers HTTP 403 to a range requested with the `range` parameter, the same
+ * bytes are requested once more with the `Range` header, a different request which it may accept.
  */
 class OkHttpUpstream(private val useRangeParameter: Boolean = false) : Upstream {
     private val requestNumber = AtomicInteger()
@@ -37,8 +40,19 @@ class OkHttpUpstream(private val useRangeParameter: Boolean = false) : Upstream 
         .build()
 
     override fun open(url: String, range: HttpRange?): UpstreamResponse {
+        val withRangeParameter = useRangeParameter && YoutubeRange.urlWithRange(url, range) != null
+        val response = request(url, range, withRangeParameter)
+        if (response.code != 403 || !withRangeParameter) {
+            return response
+        }
+        response.close()
+        CastLog.w("HTTP 403 for range parameter ${range?.toHeaderValue()}, trying the Range header")
+        return request(url, range, withRangeParameter = false)
+    }
+
+    private fun request(url: String, range: HttpRange?, withRangeParameter: Boolean): UpstreamResponse {
         val isVideoPlayback = url.contains("/videoplayback")
-        val withRange = if (useRangeParameter) YoutubeRange.urlWithRange(url, range) else null
+        val withRange = if (withRangeParameter) YoutubeRange.urlWithRange(url, range) else null
         val baseUrl = withRange ?: url
         val requestUrl = if (isVideoPlayback && !baseUrl.contains("&rn=")) {
             "$baseUrl&rn=${requestNumber.getAndIncrement()}"
