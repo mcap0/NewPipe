@@ -31,6 +31,13 @@ class CastItem(val info: StreamInfo) {
     val uploader: String = info.uploaderName.orEmpty()
     val durationSeconds: Long = info.duration
 
+    /**
+     * Where the phone player was when the video was sent to the TV, null if it was not playing
+     * it. Used once, instead of the position saved in the history.
+     */
+    @Volatile
+    var handOffSeconds: Long? = null
+
     private val progressive = info.videoStreams.map { toCandidate(it) }
     private val videoOnly = info.videoOnlyStreams.map { toCandidate(it) }
     private val audios = info.audioStreams.map { toAudioCandidate(it) }

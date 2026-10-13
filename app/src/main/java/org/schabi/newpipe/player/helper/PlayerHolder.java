@@ -74,6 +74,28 @@ public final class PlayerHolder {
         return getPlayer().map(Player::isPlaying).orElse(false);
     }
 
+    /**
+     * Pauses the local player because the video is now cast to a TV, so that it does not play
+     * on the phone and on the TV at the same time.
+     *
+     * @param serviceId the service of the video sent to the TV
+     * @param url the url of the video sent to the TV
+     * @return the position of the local player in milliseconds if it was playing that video,
+     * so that the TV continues from there, otherwise -1
+     */
+    public long pauseForCasting(final int serviceId, final String url) {
+        return getPlayer().map(player -> {
+            final long position = player.getCurrentStreamInfo()
+                    .filter(info -> info.getServiceId() == serviceId
+                            && url != null && url.equals(info.getUrl()))
+                    .map(info -> player.exoPlayerIsNull()
+                            ? -1L : player.getExoPlayer().getCurrentPosition())
+                    .orElse(-1L);
+            player.pause();
+            return position;
+        }).orElse(-1L);
+    }
+
     public boolean isPlayerOpen() {
         return getPlayer().isPresent();
     }

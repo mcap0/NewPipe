@@ -50,6 +50,7 @@ import org.schabi.newpipe.cast.proxy.CastProxyServer
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.SubtitlesStream
 import org.schabi.newpipe.local.history.HistoryRecordManager
+import org.schabi.newpipe.player.helper.PlayerHolder
 import org.schabi.newpipe.util.DependentPreferenceHelper
 
 /** What the TV is doing, as shown in the controller and in the notification. */
@@ -306,7 +307,9 @@ class CastService : Service() {
         currentSrt = null
         positionOffset = 0
 
-        val start = (startSeconds ?: savedPosition(item)).coerceAtLeast(0)
+        val handOff = item.handOffSeconds
+        item.handOffSeconds = null
+        val start = (startSeconds ?: handOff ?: savedPosition(item)).coerceAtLeast(0)
         lastPosition = start
         if (isNewVideo) {
             markAsViewed(item)
@@ -945,6 +948,7 @@ class CastService : Service() {
          */
         @MainThread
         fun start(context: Context, device: DlnaDevice, item: CastItem) {
+            handOffFromPhone(item)
             // published right away, so that the controller opened next does not see the old state
             val initial = initialState(device, item)
             currentState = initial
@@ -960,10 +964,30 @@ class CastService : Service() {
          *
          * @param playNow true to play it right away, false to play it after the others
          */
+        @MainThread
         fun enqueue(context: Context, item: CastItem, playNow: Boolean) {
+            if (playNow && currentState.active) {
+                handOffFromPhone(item)
+            }
             command(context, ACTION_ENQUEUE) {
                 putItem(this, item)
                 putExtra(EXTRA_PLAY_NOW, playNow)
+            }
+        }
+
+        /**
+         * Pauses the player of the phone, so that the video does not play twice, and continues
+         * on the TV from where the phone was if it was playing the same video.
+         */
+        private fun handOffFromPhone(item: CastItem) {
+            try {
+                val position = PlayerHolder.getInstance().pauseForCasting(item.info.serviceId, item.info.url)
+                if (position >= 0) {
+                    item.handOffSeconds = position / 1000
+                    CastLog.d("Continuing on the TV from the phone player at ${position / 1000}s")
+                }
+            } catch (e: Exception) {
+                CastLog.w("Could not pause the phone player: ${e.message}")
             }
         }
 
