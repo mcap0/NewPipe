@@ -67,6 +67,8 @@ class DeviceDescriptionParserTest {
         assertEquals("urn:schemas-upnp-org:service:AVTransport:1", device.avTransportServiceType)
         assertEquals("http://192.168.1.50:9197/upnp/control/RenderingControl1", device.renderingControlUrl)
         assertEquals("urn:schemas-upnp-org:service:RenderingControl:1", device.renderingControlServiceType)
+        assertEquals("http://192.168.1.50:9197/upnp/control/ConnectionManager1", device.connectionManagerUrl)
+        assertEquals("urn:schemas-upnp-org:service:ConnectionManager:1", device.connectionManagerServiceType)
     }
 
     @Test

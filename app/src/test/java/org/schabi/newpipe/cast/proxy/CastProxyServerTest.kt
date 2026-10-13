@@ -18,6 +18,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import org.schabi.newpipe.cast.dlna.CastDash
+import org.schabi.newpipe.cast.dlna.DashTrack
 
 class CastProxyServerTest {
     private val content = ByteArray(10_000) { (it % 251).toByte() }
@@ -180,25 +182,27 @@ class CastProxyServerTest {
     }
 
     @Test
-    fun servesContentFromMemory() {
-        val manifest = "<MPD>manifest</MPD>".toByteArray(StandardCharsets.UTF_8)
-        val url = server.registerContent(manifest, "application/dash+xml")
-        assertTrue(url.endsWith(".mpd"))
-
-        val connection = open(url)
-        assertEquals(200, connection.responseCode)
-        assertEquals("application/dash+xml", connection.contentType)
-        assertArrayEquals(manifest, connection.inputStream.readBytes())
-
-        val partial = open(url, range = "bytes=1-3")
-        assertEquals(206, partial.responseCode)
-        assertArrayEquals(manifest.copyOfRange(1, 4), partial.inputStream.readBytes())
+    fun liveStreamAnswersHeadWithoutLengthAndRefusesRanges() {
+        val track = DashTrack("https://g/v", "video/mp4", "avc1", 1, 0, 10, 11, 20)
+        val url = server.registerMux(CastDash(track, track.copy(url = "https://g/a")), "video/mp2t")
+        assertTrue(url.endsWith(".ts"))
 
         val head = open(url, method = "HEAD")
         assertEquals(200, head.responseCode)
-        assertEquals(manifest.size.toLong(), head.contentLengthLong)
-        // nothing was asked to the real video server
+        assertEquals("video/mp2t", head.contentType)
+        assertEquals(-1L, head.contentLengthLong)
+        assertEquals(CastProxyServer.DLNA_LIVE_CONTENT_FEATURES, head.getHeaderField("contentFeatures.dlna.org"))
+
+        assertEquals(416, open(url, range = "bytes=100-").responseCode)
+        // HEAD does not download anything
         assertTrue(requestedRanges.isEmpty())
+    }
+
+    @Test
+    fun parsesStartTime() {
+        assertEquals(0.0, CastProxyServer.startSeconds("/v/abc.ts"), 0.0)
+        assertEquals(125.0, CastProxyServer.startSeconds("/v/abc.ts?t=125"), 0.0)
+        assertEquals(0.0, CastProxyServer.startSeconds("/v/abc.ts?t=-4"), 0.0)
     }
 
     companion object {

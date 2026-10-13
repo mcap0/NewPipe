@@ -22,9 +22,9 @@
     <string name="cast_status_error">Errore</string>
 
     <string name="cast_error_no_wifi">Il telefono non è connesso a una rete Wi-Fi</string>
-    <string name="cast_error_no_stream">Questo video non ha uno stream trasmissibile (serve un MP4 con audio fino a 720p, oppure stream video e audio MP4 separati)</string>
+    <string name="cast_error_no_stream">Questo video non ha uno stream trasmissibile (serve un MP4 con audio fino a 720p, oppure stream video H.264 e audio AAC)</string>
     <string name="cast_error_tv">Il TV ha rifiutato la richiesta: %1$s</string>
-    <string name="cast_error_dash_refused">Il TV ha rifiutato lo stream DASH (video e audio separati): %1$s</string>
+    <string name="cast_error_live_refused">Il TV ha rifiutato lo stream MPEG-TS in diretta: %1$s</string>
     <string name="cast_error_unreachable">Il TV non è raggiungibile</string>
 
     <string name="cast_direct_link_title">Invia link diretto</string>

@@ -51,8 +51,8 @@ data class CastAudioCandidate(
  *
  * DLNA renderers play best one file with both audio and video, so "progressive" MP4 streams with
  * audio are used first, at the highest resolution up to [MAX_HEIGHT]. YouTube rarely offers them
- * nowadays, so otherwise the TV gets a DASH manifest with a video-only MP4 and an M4A audio
- * stream, chosen by [selectDash].
+ * nowadays, so otherwise a video-only MP4 and an M4A audio stream, chosen by [selectDash], are
+ * muxed by the cast proxy into one MPEG-TS stream while they are sent.
  */
 object CastStreamSelector {
     const val MAX_HEIGHT = 720
@@ -71,12 +71,11 @@ object CastStreamSelector {
     }
 
     /**
-     * Chooses a video-only MP4 stream (H.264 if possible, which every TV decodes) up to
-     * [MAX_DASH_HEIGHT] and an MP4 audio stream (AAC if possible, original language first).
-     * Both need their init and index ranges, which the manifest needs to tell the TV where the
-     * segments are.
+     * Chooses a video-only H.264 MP4 stream up to [MAX_DASH_HEIGHT] and an AAC M4A stream
+     * (original language first): the codecs MPEG-TS carries and every TV decodes. Both need
+     * their init and index ranges, used to read them fragment by fragment.
      *
-     * @return the streams for the DASH manifest, or null if there are no usable streams
+     * @return the streams to mux, or null if there are no usable streams
      */
     fun selectDash(videos: List<CastStreamCandidate>, audios: List<CastAudioCandidate>): CastDash? {
         val usableVideos = videos.filter {
@@ -85,21 +84,20 @@ object CastStreamSelector {
                 it.url.isNotEmpty() &&
                 it.mimeType.equals(MP4_MIME_TYPE, ignoreCase = true) &&
                 it.height in 1..MAX_DASH_HEIGHT &&
+                (it.codec == null || it.codec.startsWithIgnoreCase(H264)) &&
                 hasRanges(it.initRange, it.indexRange)
         }
-        val video = usableVideos.filter { it.codec.startsWithIgnoreCase(H264) }.maxOfHeight()
-            ?: usableVideos.maxOfHeight()
-            ?: return null
+        val video = usableVideos.maxOfHeight() ?: return null
 
         val usableAudios = audios.filter {
             it.isProgressiveHttp &&
                 it.url.isNotEmpty() &&
                 it.mimeType.equals(M4A_MIME_TYPE, ignoreCase = true) &&
+                (it.codec == null || it.codec.startsWithIgnoreCase(AAC)) &&
                 hasRanges(it.initRange, it.indexRange)
         }
         val audio = usableAudios.sortedWith(
             compareByDescending<CastAudioCandidate> { it.isOriginal }
-                .thenByDescending { it.codec.startsWithIgnoreCase(AAC) }
                 .thenByDescending { it.bitrate }
         ).firstOrNull() ?: return null
 

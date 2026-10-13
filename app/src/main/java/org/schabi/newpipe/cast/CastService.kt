@@ -33,11 +33,11 @@ import java.util.concurrent.TimeUnit
 import org.schabi.newpipe.R
 import org.schabi.newpipe.cast.dlna.CastLog
 import org.schabi.newpipe.cast.dlna.CastMedia
-import org.schabi.newpipe.cast.dlna.DashManifest
 import org.schabi.newpipe.cast.dlna.DlnaClient
 import org.schabi.newpipe.cast.dlna.DlnaDevice
 import org.schabi.newpipe.cast.dlna.LocalNetwork
 import org.schabi.newpipe.cast.dlna.TransportState
+import org.schabi.newpipe.cast.dlna.TsMimeType
 import org.schabi.newpipe.cast.dlna.UpnpException
 import org.schabi.newpipe.cast.proxy.CastProxyServer
 
@@ -91,6 +91,10 @@ class CastService : Service() {
     private var stoppedPolls = 0
     private var failedPolls = 0
     private var sessionId = 0
+
+    // set for live MPEG-TS sessions, which seek by restarting the stream at another time
+    private var liveMedia: CastMedia? = null
+    private var positionOffset = 0L
 
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -157,29 +161,29 @@ class CastService : Service() {
         CastLog.d("Starting session #$session on \"${device.friendlyName}\" for \"${media.title}\"")
         acquireLocks()
 
-        val castUrl = try {
-            prepareUrl(media)
+        val dlna = DlnaClient(device)
+        client = dlna
+        val castMedia = try {
+            prepareMedia(media, dlna)
         } catch (e: Exception) {
             CastLog.e("Could not prepare the video URL", e)
             fail(getString(R.string.cast_error_no_wifi))
             return
         }
 
-        val dlna = DlnaClient(device)
-        client = dlna
         try {
             // Some TVs refuse a new URI while they are playing something else
             val state = runCatching { dlna.getTransportInfo() }.getOrNull()
             if (state == TransportState.PLAYING || state == TransportState.PAUSED) {
                 runCatching { dlna.stop() }
             }
-            dlna.setAvTransportUri(media.copy(url = castUrl))
+            dlna.setAvTransportUri(castMedia)
             playWithRetries(dlna)
         } catch (e: UpnpException) {
             val error = "${e.errorCode} ${e.errorDescription}"
             fail(
                 if (media.dash != null) {
-                    getString(R.string.cast_error_dash_refused, error)
+                    getString(R.string.cast_error_live_refused, error)
                 } else {
                     getString(R.string.cast_error_tv, error)
                 }
@@ -200,16 +204,18 @@ class CastService : Service() {
     }
 
     /**
-     * @return the URL to give to the TV: through the local proxy, or the direct link if the
-     * user chose so in the settings. DASH manifests always go through the proxy, which serves
-     * them.
+     * @return what to give to the TV: the URL through the local proxy, or the direct link if the
+     * user chose so in the settings. Separate video and audio streams always go through the
+     * proxy, which muxes them into MPEG-TS.
      */
-    private fun prepareUrl(media: CastMedia): String {
+    private fun prepareMedia(media: CastMedia, dlna: DlnaClient): CastMedia {
+        liveMedia = null
+        positionOffset = 0
         val directLink = PreferenceManager.getDefaultSharedPreferences(this)
             .getBoolean(getString(R.string.cast_direct_link_key), false)
         if (directLink && media.dash == null) {
             CastLog.d("Sending the direct link to the TV (proxy disabled in the settings)")
-            return media.url
+            return media
         }
         val local = LocalNetwork.find() ?: throw IllegalStateException("No local network address")
         val server = CastProxyServer(OkHttpUpstream(), local.address)
@@ -218,18 +224,21 @@ class CastService : Service() {
 
         val dash = media.dash
         if (dash != null) {
-            val videoUrl = server.register(dash.video.url, dash.video.mimeType)
-            val audioUrl = server.register(dash.audio.url, dash.audio.mimeType)
-            val manifest = DashManifest.build(dash, videoUrl, audioUrl, media.durationSeconds)
-            CastLog.d("DASH manifest for the TV:\n$manifest")
-            val url = server.registerContent(manifest.toByteArray(Charsets.UTF_8), DashManifest.MIME_TYPE)
-            CastLog.d("Proxy manifest URL for the TV: $url")
-            return url
+            val sink = try {
+                dlna.getSinkProtocolInfo()
+            } catch (e: Exception) {
+                CastLog.w("Could not read the formats supported by the TV: ${e.message}")
+                null
+            }
+            val mimeType = TsMimeType.choose(sink)
+            val url = server.registerMux(dash, mimeType)
+            CastLog.d("Live MPEG-TS URL for the TV ($mimeType): $url")
+            return media.copy(url = url, mimeType = mimeType).also { liveMedia = it }
         }
 
         val url = server.register(media.url, media.mimeType)
         CastLog.d("Proxy URL for the TV: $url")
-        return url
+        return media.copy(url = url)
     }
 
     /** Right after SetAVTransportURI some TVs answer Play with 701 until they are ready. */
@@ -272,8 +281,12 @@ class CastService : Service() {
             publish(
                 currentState.copy(
                     status = if (!hasPlayed && status == CastStatus.STOPPED) CastStatus.BUFFERING else status,
-                    positionSeconds = position.positionSeconds,
-                    durationSeconds = position.durationSeconds.takeIf { it > 0 } ?: currentState.durationSeconds,
+                    positionSeconds = position.positionSeconds + positionOffset,
+                    durationSeconds = if (liveMedia != null) {
+                        currentState.durationSeconds
+                    } else {
+                        position.durationSeconds.takeIf { it > 0 } ?: currentState.durationSeconds
+                    },
                     error = null
                 )
             )
@@ -310,6 +323,21 @@ class CastService : Service() {
     private fun seek(positionSeconds: Long) {
         val dlna = client ?: return
         if (positionSeconds < 0) {
+            return
+        }
+        val live = liveMedia
+        if (live != null) {
+            // a live stream cannot be seeked: the TV gets a new one starting at that time
+            try {
+                dlna.setAvTransportUri(live.copy(url = "${live.url}?t=$positionSeconds"))
+                playWithRetries(dlna)
+                positionOffset = positionSeconds
+                hasPlayed = false
+                stoppedPolls = 0
+                publish(currentState.copy(positionSeconds = positionSeconds, status = CastStatus.BUFFERING))
+            } catch (e: Exception) {
+                showCommandError(e)
+            }
             return
         }
         try {

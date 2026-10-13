@@ -91,12 +91,14 @@ class CastStreamSelectorTest {
     }
 
     @Test
-    fun dashFallsBackToOtherCodecs() {
-        val dash = CastStreamSelector.selectDash(
-            listOf(videoOnly(1080, "av01.0.08M.08"), videoOnly(720, "av01.0.05M.08")),
-            listOf(audio())
-        )!!
-        assertEquals(1080, dash.video.height)
+    fun dashNeedsH264AndAac() {
+        assertNull(
+            CastStreamSelector.selectDash(
+                listOf(videoOnly(1080, "av01.0.08M.08"), videoOnly(720, "vp09.00.40.08")),
+                listOf(audio())
+            )
+        )
+        assertNull(CastStreamSelector.selectDash(listOf(videoOnly(720)), listOf(audio(codec = "opus"))))
     }
 
     @Test
@@ -106,6 +108,7 @@ class CastStreamSelectorTest {
             listOf(
                 audio(bitrate = 256_000, original = false),
                 audio(codec = "opus", bitrate = 160_000, mime = "audio/webm"),
+                audio(codec = "ac-3", bitrate = 384_000),
                 audio(bitrate = 48_000),
                 audio(bitrate = 128_000)
             )

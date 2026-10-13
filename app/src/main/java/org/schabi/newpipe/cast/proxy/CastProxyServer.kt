@@ -6,7 +6,7 @@
 package org.schabi.newpipe.cast.proxy
 
 import java.io.BufferedInputStream
-import java.io.ByteArrayInputStream
+import java.io.BufferedOutputStream
 import java.io.Closeable
 import java.io.IOException
 import java.io.InputStream
@@ -22,7 +22,9 @@ import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import org.schabi.newpipe.cast.dlna.CastDash
 import org.schabi.newpipe.cast.dlna.CastLog
+import org.schabi.newpipe.cast.ts.LiveTsMuxer
 
 /**
  * The answer of the real server (e.g. googlevideo) to a request made by the proxy.
@@ -72,8 +74,8 @@ class CastProxyServer(
     private val upstream: Upstream,
     private val bindAddress: InetAddress
 ) {
-    /** A registered URL, or a small file kept in memory if [content] is not null. */
-    private class Entry(val url: String, val mimeType: String, val content: ByteArray? = null)
+    /** A registered URL, or separate video and audio streams muxed live if [muxer] is not null. */
+    private class Entry(val url: String, val mimeType: String, val muxer: LiveTsMuxer? = null)
 
     private val entries = ConcurrentHashMap<String, Entry>()
     private val random = SecureRandom()
@@ -131,17 +133,19 @@ class CastProxyServer(
     fun register(url: String, mimeType: String): String = add(Entry(url, mimeType))
 
     /**
-     * Makes [content] (e.g. a DASH manifest) available through the proxy.
+     * Makes the video and audio streams of [tracks] available as a single MPEG-TS stream, muxed
+     * while it is sent. The returned URL accepts `?t=<seconds>` to start from another time.
      *
+     * @param mimeType the MPEG-TS MIME type the TV accepts, e.g. `video/mp2t`
      * @return the URL to give to the TV
      */
-    fun registerContent(content: ByteArray, mimeType: String): String = add(Entry("memory:", mimeType, content))
+    fun registerMux(tracks: CastDash, mimeType: String): String = add(Entry(tracks.video.url, mimeType, LiveTsMuxer(upstream, tracks)), "ts")
 
-    private fun add(entry: Entry): String {
+    private fun add(entry: Entry, extension: String = extensionFor(entry.mimeType)): String {
         val token = ByteArray(12).also { random.nextBytes(it) }
             .joinToString("") { "%02x".format(Locale.US, it) }
         entries[token] = entry
-        return "http://${hostForUrl()}:$port/v/$token.${extensionFor(entry.mimeType)}"
+        return "http://${hostForUrl()}:$port/v/$token.$extension"
     }
 
     private fun hostForUrl(): String {
@@ -198,6 +202,10 @@ class CastProxyServer(
             writeSimple(output, 404, "Not Found")
             return
         }
+        entry.muxer?.let {
+            handleMux(request, entry, it, output)
+            return
+        }
 
         val range = try {
             HttpRange.parse(request.header("Range"))
@@ -212,8 +220,7 @@ class CastProxyServer(
         // length from Content-Range without downloading the whole file
         val upstreamRange = if (isHead && range == null) HttpRange(0, 0) else range
         val upstreamResponse = try {
-            entry.content?.let { memoryResponse(it, entry.mimeType, upstreamRange) }
-                ?: upstream.open(entry.url, upstreamRange)
+            upstream.open(entry.url, upstreamRange)
         } catch (e: IOException) {
             CastLog.e("Proxy: could not reach the video server", e)
             writeSimple(output, 502, "Bad Gateway")
@@ -262,25 +269,44 @@ class CastProxyServer(
         }
     }
 
-    /** Answers like an HTTP server would for a file kept in memory. */
-    private fun memoryResponse(content: ByteArray, mimeType: String, range: HttpRange?): UpstreamResponse {
-        val total = content.size.toLong()
-        if (range == null) {
-            return UpstreamResponse(200, total, null, mimeType, ByteArrayInputStream(content))
+    /**
+     * Sends the live MPEG-TS stream. Its length is unknown, so it is sent until the end without
+     * Content-Length, and byte ranges other than "from the start" cannot be served: the TV seeks
+     * by asking for a new stream with `?t=<seconds>`.
+     */
+    private fun handleMux(request: HttpRequest, entry: Entry, muxer: LiveTsMuxer, output: OutputStream) {
+        val range = runCatching { HttpRange.parse(request.header("Range")) }.getOrNull()
+        if (request.header("Range") != null && (range == null || range.start != 0L || range.end != null)) {
+            CastLog.w("Proxy: range ${request.header("Range")} not possible on a live stream")
+            writeSimple(output, 416, "Range Not Satisfiable")
+            return
         }
-        val start = range.start ?: (total - range.suffixLength!!).coerceAtLeast(0)
-        val end = minOf(range.end ?: (total - 1), total - 1)
-        if (start >= total) {
-            return UpstreamResponse(416, 0, "bytes */$total", null, null)
+        val start = startSeconds(request.path)
+        writeStreamHeaders(output, entry.mimeType)
+        if (request.method == "HEAD") {
+            output.flush()
+            return
         }
-        val slice = content.copyOfRange(start.toInt(), end.toInt() + 1)
-        return UpstreamResponse(
-            206,
-            slice.size.toLong(),
-            "bytes $start-$end/$total",
-            mimeType,
-            ByteArrayInputStream(slice)
-        )
+        try {
+            muxer.write(BufferedOutputStream(output, BUFFER_SIZE), start)
+        } catch (e: SocketException) {
+            CastLog.d("Proxy: TV closed the live stream (${e.message})")
+        } catch (e: IOException) {
+            // the headers are already sent, closing the connection is the only way to tell
+            CastLog.e("Proxy: live stream failed", e)
+        }
+    }
+
+    private fun writeStreamHeaders(output: OutputStream, contentType: String) {
+        val headers = "HTTP/1.1 200 OK\r\n" +
+            "Content-Type: $contentType\r\n" +
+            "transferMode.dlna.org: Streaming\r\n" +
+            "contentFeatures.dlna.org: $DLNA_LIVE_CONTENT_FEATURES\r\n" +
+            "Server: $SERVER\r\n" +
+            "Connection: close\r\n" +
+            "\r\n"
+        CastLog.d("Proxy -> ${headers.trim()}")
+        output.write(headers.toByteArray(StandardCharsets.ISO_8859_1))
     }
 
     private fun writeHeaders(
@@ -342,12 +368,24 @@ class CastProxyServer(
         const val DLNA_CONTENT_FEATURES =
             "DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
 
+        /** No seeking by bytes or time, converted content, streaming transfer mode. */
+        const val DLNA_LIVE_CONTENT_FEATURES =
+            "DLNA.ORG_OP=00;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=01700000000000000000000000000000"
+
+        /** @return the start time asked with `?t=<seconds>`, 0 if absent */
+        fun startSeconds(path: String): Double = path.substringAfter('?', "")
+            .split('&')
+            .firstOrNull { it.startsWith("t=") }
+            ?.removePrefix("t=")
+            ?.toDoubleOrNull()
+            ?.coerceAtLeast(0.0)
+            ?: 0.0
+
         fun extensionFor(mimeType: String): String = when (mimeType.lowercase(Locale.US)) {
             "video/mp4" -> "mp4"
             "video/webm" -> "webm"
             "audio/mp4", "audio/m4a" -> "m4a"
             "video/3gpp" -> "3gp"
-            "application/dash+xml" -> "mpd"
             else -> "bin"
         }
     }

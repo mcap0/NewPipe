@@ -95,6 +95,16 @@ class DlnaClient(private val device: DlnaDevice) {
         renderingControl("SetVolume", listOf(INSTANCE_ID, CHANNEL, "DesiredVolume" to volume.toString()))
     }
 
+    /**
+     * @return the formats the TV can play (the `Sink` of `GetProtocolInfo`), or null if the
+     * device has no ConnectionManager service
+     */
+    fun getSinkProtocolInfo(): String? {
+        val url = device.connectionManagerUrl ?: return null
+        val serviceType = device.connectionManagerServiceType ?: return null
+        return call(url, serviceType, "GetProtocolInfo", emptyList(), true, READ_TIMEOUT_MILLIS)["Sink"]
+    }
+
     private fun avTransport(
         action: String,
         arguments: List<Pair<String, String>>,

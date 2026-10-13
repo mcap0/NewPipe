@@ -17,6 +17,7 @@ import org.w3c.dom.Element
  * @param location the URL of the device description, from SSDP
  * @param avTransportControlUrl absolute URL of the AVTransport control endpoint
  * @param renderingControlUrl absolute URL of the RenderingControl control endpoint, if any
+ * @param connectionManagerUrl absolute URL of the ConnectionManager control endpoint, if any
  */
 data class DlnaDevice(
     val udn: String,
@@ -27,7 +28,9 @@ data class DlnaDevice(
     val avTransportControlUrl: String,
     val avTransportServiceType: String,
     val renderingControlUrl: String?,
-    val renderingControlServiceType: String?
+    val renderingControlServiceType: String?,
+    val connectionManagerUrl: String? = null,
+    val connectionManagerServiceType: String? = null
 ) : Serializable {
     companion object {
         private const val serialVersionUID = 1L
@@ -40,6 +43,7 @@ data class DlnaDevice(
 object DeviceDescriptionParser {
     private const val AV_TRANSPORT_PREFIX = "urn:schemas-upnp-org:service:AVTransport:"
     private const val RENDERING_CONTROL_PREFIX = "urn:schemas-upnp-org:service:RenderingControl:"
+    private const val CONNECTION_MANAGER_PREFIX = "urn:schemas-upnp-org:service:ConnectionManager:"
 
     /**
      * @param xml the device description
@@ -63,6 +67,9 @@ object DeviceDescriptionParser {
             val renderingControl = services.firstOrNull {
                 serviceType(it).startsWith(RENDERING_CONTROL_PREFIX)
             }
+            val connectionManager = services.firstOrNull {
+                serviceType(it).startsWith(CONNECTION_MANAGER_PREFIX)
+            }
             val avTransportUrl = XmlUtils.childText(avTransport, "controlURL") ?: continue
 
             return DlnaDevice(
@@ -78,7 +85,11 @@ object DeviceDescriptionParser {
                 renderingControlUrl = renderingControl
                     ?.let { XmlUtils.childText(it, "controlURL") }
                     ?.let { resolveUrl(base, it) },
-                renderingControlServiceType = renderingControl?.let { serviceType(it) }
+                renderingControlServiceType = renderingControl?.let { serviceType(it) },
+                connectionManagerUrl = connectionManager
+                    ?.let { XmlUtils.childText(it, "controlURL") }
+                    ?.let { resolveUrl(base, it) },
+                connectionManagerServiceType = connectionManager?.let { serviceType(it) }
             )
         }
         return null

@@ -13,7 +13,7 @@ import org.schabi.newpipe.cast.dlna.CastLog
 import org.schabi.newpipe.cast.dlna.CastMedia
 import org.schabi.newpipe.cast.dlna.CastStreamCandidate
 import org.schabi.newpipe.cast.dlna.CastStreamSelector
-import org.schabi.newpipe.cast.dlna.DashManifest
+import org.schabi.newpipe.cast.dlna.TsMimeType
 import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.stream.AudioTrackType
 import org.schabi.newpipe.extractor.stream.DeliveryMethod
@@ -74,20 +74,20 @@ object CastLauncher {
             )
         }
 
-        // no single file with audio and video: let the TV play them together through DASH
+        // no single file with audio and video: the proxy will mux them into MPEG-TS
         val dash = CastStreamSelector.selectDash(
             info.videoOnlyStreams.map { toCandidate(it) },
             info.audioStreams.map { toAudioCandidate(it) }
         ) ?: return null
         CastLog.d(
-            "Chosen DASH streams for \"${info.name}\": ${dash.video.height}p ${dash.video.codecs}" +
+            "Chosen streams to mux for \"${info.name}\": ${dash.video.height}p ${dash.video.codecs}" +
                 " + ${dash.audio.codecs} ${dash.audio.bandwidth} bit/s"
         )
         return CastMedia(
             url = dash.video.url,
             title = info.name.orEmpty(),
             uploader = info.uploaderName.orEmpty(),
-            mimeType = DashManifest.MIME_TYPE,
+            mimeType = TsMimeType.DEFAULT,
             durationSeconds = info.duration,
             dash = dash
         )

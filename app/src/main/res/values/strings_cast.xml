@@ -25,9 +25,9 @@
     <string name="cast_status_error">Error</string>
 
     <string name="cast_error_no_wifi">The phone is not connected to a Wi-Fi network</string>
-    <string name="cast_error_no_stream">This video has no stream that can be cast (an MP4 with audio up to 720p, or MP4 video and audio streams, are needed)</string>
+    <string name="cast_error_no_stream">This video has no stream that can be cast (an MP4 with audio up to 720p, or H.264 video and AAC audio streams, are needed)</string>
     <string name="cast_error_tv">The TV refused the request: %1$s</string>
-    <string name="cast_error_dash_refused">The TV refused the DASH stream (separate video and audio): %1$s</string>
+    <string name="cast_error_live_refused">The TV refused the live MPEG-TS stream: %1$s</string>
     <string name="cast_error_unreachable">The TV cannot be reached</string>
 
     <string name="cast_direct_link_title">Send direct link</string>
