@@ -11,6 +11,9 @@ import org.schabi.newpipe.R;
 import java.util.List;
 
 public final class TabsManager {
+    /** Set once the saved tabs got the Perle tab in place of the kiosk one. */
+    private static final String PERLE_TAB_MIGRATED_KEY = "perle_tab_migrated";
+
     private final SharedPreferences sharedPreferences;
     private final String savedTabsKey;
     private final Context context;
@@ -30,7 +33,20 @@ public final class TabsManager {
     public List<Tab> getTabs() {
         final String savedJson = sharedPreferences.getString(savedTabsKey, null);
         try {
-            return TabsJsonHelper.getTabsFromJson(savedJson);
+            final List<Tab> tabs = TabsJsonHelper.getTabsFromJson(savedJson);
+            if (sharedPreferences.getBoolean(PERLE_TAB_MIGRATED_KEY, false)) {
+                return tabs;
+            }
+            final SharedPreferences.Editor editor = sharedPreferences.edit()
+                    .putBoolean(PERLE_TAB_MIGRATED_KEY, true);
+            if (savedJson == null) {
+                // the default tabs already contain Perle
+                editor.apply();
+                return tabs;
+            }
+            final List<Tab> migrated = TabsJsonHelper.withPerleTab(tabs);
+            editor.putString(savedTabsKey, TabsJsonHelper.getJsonToSave(migrated)).apply();
+            return migrated;
         } catch (final TabsJsonHelper.InvalidJsonException e) {
             Toast.makeText(context, R.string.saved_tabs_invalid_json, Toast.LENGTH_SHORT).show();
             return getDefaultTabs();

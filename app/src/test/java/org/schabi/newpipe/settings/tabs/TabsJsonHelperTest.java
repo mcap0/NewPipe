@@ -141,4 +141,36 @@ public class TabsJsonHelperTest {
         assertEquals(feedGroupTab.getIconId(), grpTabFromReturnedJson.getIconId());
         assertEquals(feedGroupTab.getFeedGroupName(), grpTabFromReturnedJson.getFeedGroupName());
     }
+
+    @Test
+    public void testPerleReplacesDefaultKiosk() {
+        final List<Tab> migrated = TabsJsonHelper.withPerleTab(Arrays.asList(
+                Tab.Type.DEFAULT_KIOSK.getTab(),
+                Tab.Type.FEED.getTab()));
+        assertEquals(Arrays.asList(Tab.Type.PERLE.getTab(), Tab.Type.FEED.getTab()), migrated);
+    }
+
+    @Test
+    public void testPerleReplacesKiosk() {
+        final List<Tab> migrated = TabsJsonHelper.withPerleTab(Arrays.asList(
+                Tab.Type.FEED.getTab(),
+                new Tab.KioskTab(0, "live")));
+        assertEquals(Arrays.asList(Tab.Type.FEED.getTab(), Tab.Type.PERLE.getTab()), migrated);
+    }
+
+    @Test
+    public void testPerleAddedFirstWithoutKiosk() {
+        final List<Tab> migrated = TabsJsonHelper.withPerleTab(
+                Collections.singletonList(Tab.Type.FEED.getTab()));
+        assertEquals(Arrays.asList(Tab.Type.PERLE.getTab(), Tab.Type.FEED.getTab()), migrated);
+    }
+
+    @Test
+    public void testPerleNotDuplicated() {
+        final List<Tab> tabs = Arrays.asList(
+                Tab.Type.FEED.getTab(),
+                Tab.Type.PERLE.getTab(),
+                Tab.Type.DEFAULT_KIOSK.getTab());
+        assertEquals(tabs, TabsJsonHelper.withPerleTab(tabs));
+    }
 }

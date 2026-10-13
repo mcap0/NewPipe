@@ -9,6 +9,7 @@ import com.grack.nanojson.JsonParserException;
 import com.grack.nanojson.JsonStringWriter;
 import com.grack.nanojson.JsonWriter;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.stream.Collectors;
@@ -20,7 +21,7 @@ public final class TabsJsonHelper {
     private static final String JSON_TABS_ARRAY_KEY = "tabs";
 
     private static final List<Tab> FALLBACK_INITIAL_TABS_LIST = List.of(
-            Tab.Type.DEFAULT_KIOSK.getTab(),
+            Tab.Type.PERLE.getTab(),
             Tab.Type.FEED.getTab(),
             Tab.Type.SUBSCRIPTIONS.getTab(),
             Tab.Type.BOOKMARKS.getTab());
@@ -90,6 +91,42 @@ public final class TabsJsonHelper {
 
     public static List<Tab> getDefaultTabs() {
         return FALLBACK_INITIAL_TABS_LIST;
+    }
+
+    /**
+     * Puts the Perle tab where the kiosk (e.g. "Live") was: in place of the default kiosk tab, or
+     * else of the first kiosk tab, or else as the first tab. Lists already containing Perle are
+     * returned unchanged.
+     *
+     * @param tabs the tabs saved by the user
+     * @return a new list with the Perle tab
+     */
+    public static List<Tab> withPerleTab(final List<Tab> tabs) {
+        final Tab perle = Tab.Type.PERLE.getTab();
+        final List<Tab> result = new ArrayList<>(tabs);
+        if (result.contains(perle)) {
+            return result;
+        }
+
+        int index = indexOfType(result, Tab.Type.DEFAULT_KIOSK);
+        if (index < 0) {
+            index = indexOfType(result, Tab.Type.KIOSK);
+        }
+        if (index >= 0) {
+            result.set(index, perle);
+        } else {
+            result.add(0, perle);
+        }
+        return result;
+    }
+
+    private static int indexOfType(final List<Tab> tabs, final Tab.Type type) {
+        for (int i = 0; i < tabs.size(); i++) {
+            if (tabs.get(i).getTabId() == type.getTabId()) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     public static final class InvalidJsonException extends Exception {
