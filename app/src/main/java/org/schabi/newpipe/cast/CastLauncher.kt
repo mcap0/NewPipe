@@ -8,10 +8,14 @@ package org.schabi.newpipe.cast
 import android.widget.Toast
 import androidx.fragment.app.Fragment
 import org.schabi.newpipe.R
+import org.schabi.newpipe.cast.dlna.CastAudioCandidate
 import org.schabi.newpipe.cast.dlna.CastLog
 import org.schabi.newpipe.cast.dlna.CastMedia
 import org.schabi.newpipe.cast.dlna.CastStreamCandidate
 import org.schabi.newpipe.cast.dlna.CastStreamSelector
+import org.schabi.newpipe.cast.dlna.DashManifest
+import org.schabi.newpipe.extractor.stream.AudioStream
+import org.schabi.newpipe.extractor.stream.AudioTrackType
 import org.schabi.newpipe.extractor.stream.DeliveryMethod
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.StreamType
@@ -37,7 +41,10 @@ object CastLauncher {
         if (media == null) {
             CastLog.w(
                 "No castable stream for ${info.url}. Available: " +
-                    info.videoStreams.joinToString { describe(it) }
+                    (info.videoStreams + info.videoOnlyStreams).joinToString { describe(it) } +
+                    "; audio: " + info.audioStreams.joinToString {
+                        "${it.format?.mimeType} ${it.codec} ${it.deliveryMethod}"
+                    }
             )
             Toast.makeText(context, R.string.cast_error_no_stream, Toast.LENGTH_LONG).show()
             return
@@ -55,14 +62,34 @@ object CastLauncher {
      */
     fun buildMedia(info: StreamInfo): CastMedia? {
         val candidates = info.videoStreams.map { toCandidate(it) }
-        val chosen = CastStreamSelector.select(candidates) ?: return null
-        CastLog.d("Chosen stream for \"${info.name}\": ${chosen.height}p ${chosen.mimeType}")
+        val chosen = CastStreamSelector.select(candidates)
+        if (chosen != null) {
+            CastLog.d("Chosen stream for \"${info.name}\": ${chosen.height}p ${chosen.mimeType}")
+            return CastMedia(
+                url = chosen.url,
+                title = info.name.orEmpty(),
+                uploader = info.uploaderName.orEmpty(),
+                mimeType = CastStreamSelector.MP4_MIME_TYPE,
+                durationSeconds = info.duration
+            )
+        }
+
+        // no single file with audio and video: let the TV play them together through DASH
+        val dash = CastStreamSelector.selectDash(
+            info.videoOnlyStreams.map { toCandidate(it) },
+            info.audioStreams.map { toAudioCandidate(it) }
+        ) ?: return null
+        CastLog.d(
+            "Chosen DASH streams for \"${info.name}\": ${dash.video.height}p ${dash.video.codecs}" +
+                " + ${dash.audio.codecs} ${dash.audio.bandwidth} bit/s"
+        )
         return CastMedia(
-            url = chosen.url,
+            url = dash.video.url,
             title = info.name.orEmpty(),
             uploader = info.uploaderName.orEmpty(),
-            mimeType = CastStreamSelector.MP4_MIME_TYPE,
-            durationSeconds = info.duration
+            mimeType = DashManifest.MIME_TYPE,
+            durationSeconds = info.duration,
+            dash = dash
         )
     }
 
@@ -73,7 +100,23 @@ object CastLauncher {
             ?: stream.getResolution().substringBefore('p').toIntOrNull()
             ?: 0,
         isVideoOnly = stream.isVideoOnly(),
-        isProgressiveHttp = stream.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP
+        isProgressiveHttp = stream.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP,
+        codec = stream.codec,
+        width = stream.width,
+        bitrate = stream.bitrate,
+        initRange = CastStreamSelector.rangeOf(stream.initStart, stream.initEnd),
+        indexRange = CastStreamSelector.rangeOf(stream.indexStart, stream.indexEnd)
+    )
+
+    private fun toAudioCandidate(stream: AudioStream) = CastAudioCandidate(
+        url = if (stream.isUrl) stream.content.orEmpty() else "",
+        mimeType = stream.format?.mimeType,
+        isProgressiveHttp = stream.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP,
+        codec = stream.codec,
+        bitrate = stream.bitrate.takeIf { it > 0 } ?: stream.averageBitrate.coerceAtLeast(0),
+        isOriginal = stream.audioTrackType == null || stream.audioTrackType == AudioTrackType.ORIGINAL,
+        initRange = CastStreamSelector.rangeOf(stream.initStart, stream.initEnd),
+        indexRange = CastStreamSelector.rangeOf(stream.indexStart, stream.indexEnd)
     )
 
     private fun describe(stream: VideoStream) = "${stream.getResolution()} ${stream.format?.mimeType} ${stream.deliveryMethod}" +

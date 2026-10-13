@@ -33,6 +33,7 @@ import java.util.concurrent.TimeUnit
 import org.schabi.newpipe.R
 import org.schabi.newpipe.cast.dlna.CastLog
 import org.schabi.newpipe.cast.dlna.CastMedia
+import org.schabi.newpipe.cast.dlna.DashManifest
 import org.schabi.newpipe.cast.dlna.DlnaClient
 import org.schabi.newpipe.cast.dlna.DlnaDevice
 import org.schabi.newpipe.cast.dlna.LocalNetwork
@@ -175,7 +176,14 @@ class CastService : Service() {
             dlna.setAvTransportUri(media.copy(url = castUrl))
             playWithRetries(dlna)
         } catch (e: UpnpException) {
-            fail(getString(R.string.cast_error_tv, "${e.errorCode} ${e.errorDescription}"))
+            val error = "${e.errorCode} ${e.errorDescription}"
+            fail(
+                if (media.dash != null) {
+                    getString(R.string.cast_error_dash_refused, error)
+                } else {
+                    getString(R.string.cast_error_tv, error)
+                }
+            )
             return
         } catch (e: Exception) {
             CastLog.e("Could not start playback", e)
@@ -193,12 +201,13 @@ class CastService : Service() {
 
     /**
      * @return the URL to give to the TV: through the local proxy, or the direct link if the
-     * user chose so in the settings
+     * user chose so in the settings. DASH manifests always go through the proxy, which serves
+     * them.
      */
     private fun prepareUrl(media: CastMedia): String {
         val directLink = PreferenceManager.getDefaultSharedPreferences(this)
             .getBoolean(getString(R.string.cast_direct_link_key), false)
-        if (directLink) {
+        if (directLink && media.dash == null) {
             CastLog.d("Sending the direct link to the TV (proxy disabled in the settings)")
             return media.url
         }
@@ -206,6 +215,18 @@ class CastService : Service() {
         val server = CastProxyServer(OkHttpUpstream(), local.address)
         server.start()
         proxy = server
+
+        val dash = media.dash
+        if (dash != null) {
+            val videoUrl = server.register(dash.video.url, dash.video.mimeType)
+            val audioUrl = server.register(dash.audio.url, dash.audio.mimeType)
+            val manifest = DashManifest.build(dash, videoUrl, audioUrl, media.durationSeconds)
+            CastLog.d("DASH manifest for the TV:\n$manifest")
+            val url = server.registerContent(manifest.toByteArray(Charsets.UTF_8), DashManifest.MIME_TYPE)
+            CastLog.d("Proxy manifest URL for the TV: $url")
+            return url
+        }
+
         val url = server.register(media.url, media.mimeType)
         CastLog.d("Proxy URL for the TV: $url")
         return url

@@ -179,6 +179,28 @@ class CastProxyServerTest {
         assertEquals("1", request.header("getContentFeatures.dlna.org"))
     }
 
+    @Test
+    fun servesContentFromMemory() {
+        val manifest = "<MPD>manifest</MPD>".toByteArray(StandardCharsets.UTF_8)
+        val url = server.registerContent(manifest, "application/dash+xml")
+        assertTrue(url.endsWith(".mpd"))
+
+        val connection = open(url)
+        assertEquals(200, connection.responseCode)
+        assertEquals("application/dash+xml", connection.contentType)
+        assertArrayEquals(manifest, connection.inputStream.readBytes())
+
+        val partial = open(url, range = "bytes=1-3")
+        assertEquals(206, partial.responseCode)
+        assertArrayEquals(manifest.copyOfRange(1, 4), partial.inputStream.readBytes())
+
+        val head = open(url, method = "HEAD")
+        assertEquals(200, head.responseCode)
+        assertEquals(manifest.size.toLong(), head.contentLengthLong)
+        // nothing was asked to the real video server
+        assertTrue(requestedRanges.isEmpty())
+    }
+
     companion object {
         private const val REAL_URL = "https://rr1---sn-xyz.googlevideo.com/videoplayback?itag=18&x=1"
     }

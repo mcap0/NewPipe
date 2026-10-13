@@ -15,6 +15,8 @@ import java.util.Locale
  * @param mimeType e.g. `video/mp4`
  * @param durationSeconds the duration, or a value <= 0 if unknown
  * @param thumbnailUrl optional album art shown by some TVs
+ * @param dash if not null, [url] is ignored and the TV gets a DASH manifest playing these
+ * separate video and audio streams together
  */
 data class CastMedia(
     val url: String,
@@ -22,7 +24,8 @@ data class CastMedia(
     val uploader: String,
     val mimeType: String,
     val durationSeconds: Long,
-    val thumbnailUrl: String? = null
+    val thumbnailUrl: String? = null,
+    val dash: CastDash? = null
 ) : Serializable {
     companion object {
         private const val serialVersionUID = 1L

@@ -48,4 +48,82 @@ class CastStreamSelectorTest {
         assertNull(CastStreamSelector.select(emptyList()))
         assertNull(CastStreamSelector.select(listOf(stream(360, mime = null))))
     }
+
+    private fun videoOnly(height: Int, codec: String = "avc1.640028", ranges: Boolean = true, bitrate: Int = 1000) = CastStreamCandidate(
+        url = "https://h/v$height-$codec",
+        mimeType = "video/mp4",
+        height = height,
+        isVideoOnly = true,
+        isProgressiveHttp = true,
+        codec = codec,
+        width = height * 16 / 9,
+        bitrate = bitrate,
+        initRange = if (ranges) 0L..740L else null,
+        indexRange = if (ranges) 741L..1500L else null
+    )
+
+    private fun audio(
+        codec: String = "mp4a.40.2",
+        bitrate: Int = 128_000,
+        original: Boolean = true,
+        mime: String = "audio/mp4"
+    ) = CastAudioCandidate(
+        url = "https://h/a-$codec-$bitrate-$original",
+        mimeType = mime,
+        isProgressiveHttp = true,
+        codec = codec,
+        bitrate = bitrate,
+        isOriginal = original,
+        initRange = 0L..630L,
+        indexRange = 631L..900L
+    )
+
+    @Test
+    fun dashPrefersH264UpTo1080p() {
+        val dash = CastStreamSelector.selectDash(
+            listOf(videoOnly(720), videoOnly(1080), videoOnly(1440), videoOnly(2160, "av01.0.12M.08")),
+            listOf(audio())
+        )!!
+        assertEquals(1080, dash.video.height)
+        assertEquals("avc1.640028", dash.video.codecs)
+        assertEquals(0L, dash.video.initStart)
+        assertEquals(1500L, dash.video.indexEnd)
+    }
+
+    @Test
+    fun dashFallsBackToOtherCodecs() {
+        val dash = CastStreamSelector.selectDash(
+            listOf(videoOnly(1080, "av01.0.08M.08"), videoOnly(720, "av01.0.05M.08")),
+            listOf(audio())
+        )!!
+        assertEquals(1080, dash.video.height)
+    }
+
+    @Test
+    fun dashPrefersOriginalAacAudio() {
+        val dash = CastStreamSelector.selectDash(
+            listOf(videoOnly(720)),
+            listOf(
+                audio(bitrate = 256_000, original = false),
+                audio(codec = "opus", bitrate = 160_000, mime = "audio/webm"),
+                audio(bitrate = 48_000),
+                audio(bitrate = 128_000)
+            )
+        )!!
+        assertEquals("https://h/a-mp4a.40.2-128000-true", dash.audio.url)
+    }
+
+    @Test
+    fun dashNeedsRangesAndAudio() {
+        assertNull(CastStreamSelector.selectDash(listOf(videoOnly(720, ranges = false)), listOf(audio())))
+        assertNull(CastStreamSelector.selectDash(listOf(videoOnly(720)), emptyList()))
+        assertNull(CastStreamSelector.selectDash(emptyList(), listOf(audio())))
+    }
+
+    @Test
+    fun rangeOfRejectsUnknownRanges() {
+        assertNull(CastStreamSelector.rangeOf(-1, -1))
+        assertNull(CastStreamSelector.rangeOf(0, 0))
+        assertEquals(0L..740L, CastStreamSelector.rangeOf(0, 740))
+    }
 }

@@ -6,6 +6,7 @@
 package org.schabi.newpipe.cast.proxy
 
 import java.io.BufferedInputStream
+import java.io.ByteArrayInputStream
 import java.io.Closeable
 import java.io.IOException
 import java.io.InputStream
@@ -71,7 +72,8 @@ class CastProxyServer(
     private val upstream: Upstream,
     private val bindAddress: InetAddress
 ) {
-    private class Entry(val url: String, val mimeType: String)
+    /** A registered URL, or a small file kept in memory if [content] is not null. */
+    private class Entry(val url: String, val mimeType: String, val content: ByteArray? = null)
 
     private val entries = ConcurrentHashMap<String, Entry>()
     private val random = SecureRandom()
@@ -126,11 +128,20 @@ class CastProxyServer(
      *
      * @return the URL to give to the TV
      */
-    fun register(url: String, mimeType: String): String {
+    fun register(url: String, mimeType: String): String = add(Entry(url, mimeType))
+
+    /**
+     * Makes [content] (e.g. a DASH manifest) available through the proxy.
+     *
+     * @return the URL to give to the TV
+     */
+    fun registerContent(content: ByteArray, mimeType: String): String = add(Entry("memory:", mimeType, content))
+
+    private fun add(entry: Entry): String {
         val token = ByteArray(12).also { random.nextBytes(it) }
             .joinToString("") { "%02x".format(Locale.US, it) }
-        entries[token] = Entry(url, mimeType)
-        return "http://${hostForUrl()}:$port/v/$token.${extensionFor(mimeType)}"
+        entries[token] = entry
+        return "http://${hostForUrl()}:$port/v/$token.${extensionFor(entry.mimeType)}"
     }
 
     private fun hostForUrl(): String {
@@ -201,7 +212,8 @@ class CastProxyServer(
         // length from Content-Range without downloading the whole file
         val upstreamRange = if (isHead && range == null) HttpRange(0, 0) else range
         val upstreamResponse = try {
-            upstream.open(entry.url, upstreamRange)
+            entry.content?.let { memoryResponse(it, entry.mimeType, upstreamRange) }
+                ?: upstream.open(entry.url, upstreamRange)
         } catch (e: IOException) {
             CastLog.e("Proxy: could not reach the video server", e)
             writeSimple(output, 502, "Bad Gateway")
@@ -248,6 +260,27 @@ class CastProxyServer(
             }
             output.flush()
         }
+    }
+
+    /** Answers like an HTTP server would for a file kept in memory. */
+    private fun memoryResponse(content: ByteArray, mimeType: String, range: HttpRange?): UpstreamResponse {
+        val total = content.size.toLong()
+        if (range == null) {
+            return UpstreamResponse(200, total, null, mimeType, ByteArrayInputStream(content))
+        }
+        val start = range.start ?: (total - range.suffixLength!!).coerceAtLeast(0)
+        val end = minOf(range.end ?: (total - 1), total - 1)
+        if (start >= total) {
+            return UpstreamResponse(416, 0, "bytes */$total", null, null)
+        }
+        val slice = content.copyOfRange(start.toInt(), end.toInt() + 1)
+        return UpstreamResponse(
+            206,
+            slice.size.toLong(),
+            "bytes $start-$end/$total",
+            mimeType,
+            ByteArrayInputStream(slice)
+        )
     }
 
     private fun writeHeaders(
@@ -314,6 +347,7 @@ class CastProxyServer(
             "video/webm" -> "webm"
             "audio/mp4", "audio/m4a" -> "m4a"
             "video/3gpp" -> "3gp"
+            "application/dash+xml" -> "mpd"
             else -> "bin"
         }
     }
