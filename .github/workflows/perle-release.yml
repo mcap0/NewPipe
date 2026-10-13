@@ -1,16 +1,19 @@
 name: "Publish NewPipe Perle APK"
 
-# Push a tag like `perle-v1`, or run this workflow manually giving the tag name,
-# to build the APK and publish it in a GitHub Release.
+# Every push to the perle branch publishes a GitHub Release tagged perle-v<run number>,
+# after running the same checks as the CI. Pushing a perle-v* tag publishes that tag.
 on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Release tag, e.g. perle-v2'
-        required: true
   push:
+    branches:
+      - perle
     tags:
       - 'perle-v*'
+    paths-ignore:
+      - 'README.md'
+      - 'doc/**'
+      - 'fastlane/**'
+      - 'assets/**'
+      - '.github/**/*.md'
 
 jobs:
   release:
@@ -45,8 +48,9 @@ jobs:
           mkdir -p ~/.android
           echo "$PERLE_DEBUG_KEYSTORE" | base64 -d > ~/.android/debug.keystore
 
-      - name: Build APK
-        run: ./gradlew assembleContinuous --stacktrace -DskipFormatKtlint
+      # testDebugUnitTest also runs checkstyle and ktlint
+      - name: Build APK and run checks
+        run: ./gradlew assembleContinuous testDebugUnitTest --stacktrace -DskipFormatKtlint
 
       - name: Rename APK
         run: |
@@ -56,7 +60,7 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('perle-v{0}', github.run_number) }}
         run: |
           gh release create "$TAG" app/build/outputs/apk/continuous/NewPipe-Perle.apk \
             --repo "$GITHUB_REPOSITORY" \
