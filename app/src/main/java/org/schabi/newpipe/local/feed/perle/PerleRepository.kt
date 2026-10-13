@@ -114,14 +114,20 @@ class PerleRepository(context: Context) {
         preferences.edit { remove(KEY_HIDDEN_URLS) }
     }
 
+    /**
+     * @return the feed groups (folders) created by the user, in their order
+     */
+    fun feedGroups(): List<FeedGroupEntity> = database.feedGroupDAO().getAll().blockingFirst()
+
     private fun subscriptionsFor(groupId: Long): List<SubscriptionEntity> {
         val subscriptionDAO = database.subscriptionDAO()
-        return if (groupId == FeedGroupEntity.GROUP_ALL_ID) {
+        val subscriptions = if (groupId == FeedGroupEntity.GROUP_ALL_ID) {
             subscriptionDAO.getAll().blockingFirst()
         } else {
-            database.feedGroupDAO().getSubscriptionIdsFor(groupId).blockingFirst()
-                .map { subscriptionDAO.getSubscription(it) }
+            subscriptionDAO.getSubscriptionsInGroup(groupId)
         }
+        Log.d(TAG, "Group $groupId has ${subscriptions.size} channels")
+        return subscriptions
     }
 
     private fun loadChannel(subscription: SubscriptionEntity): List<PerleVideo> {

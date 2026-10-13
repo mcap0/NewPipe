@@ -12,6 +12,7 @@ import android.view.MenuInflater
 import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
+import androidx.appcompat.app.AlertDialog
 import androidx.core.os.bundleOf
 import androidx.core.view.isVisible
 import androidx.fragment.app.FragmentManager
@@ -22,6 +23,7 @@ import com.xwray.groupie.GroupieAdapter
 import com.xwray.groupie.Item
 import com.xwray.groupie.OnItemClickListener
 import com.xwray.groupie.OnItemLongClickListener
+import io.reactivex.rxjava3.disposables.CompositeDisposable
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneId
@@ -54,6 +56,7 @@ class PerleFragment : BaseFragment() {
 
     private lateinit var viewModel: PerleViewModel
     private lateinit var groupAdapter: GroupieAdapter
+    private val disposables = CompositeDisposable()
 
     private var groupId = FeedGroupEntity.GROUP_ALL_ID
     private var groupName = ""
@@ -93,6 +96,7 @@ class PerleFragment : BaseFragment() {
     }
 
     override fun onDestroyView() {
+        disposables.clear()
         binding.perleItemsList.adapter = null
         _binding = null
         super.onDestroyView()
@@ -106,7 +110,7 @@ class PerleFragment : BaseFragment() {
         super.onCreateOptionsMenu(menu, inflater)
         activity.supportActionBar?.setDisplayShowTitleEnabled(true)
         activity.supportActionBar?.setTitle(R.string.perle_title)
-        activity.supportActionBar?.subtitle = groupName
+        activity.supportActionBar?.subtitle = subtitle()
         inflater.inflate(R.menu.menu_perle_fragment, menu)
     }
 
@@ -122,6 +126,11 @@ class PerleFragment : BaseFragment() {
                 true
             }
 
+            R.id.menu_item_perle_group -> {
+                showGroupChooser()
+                true
+            }
+
             R.id.menu_item_perle_show_hidden -> {
                 viewModel.clearHidden()
                 true
@@ -133,9 +142,44 @@ class PerleFragment : BaseFragment() {
 
     override fun onDestroyOptionsMenu() {
         super.onDestroyOptionsMenu()
-        if (groupName != "" && activity?.supportActionBar?.subtitle == groupName) {
+        if (activity?.supportActionBar?.subtitle == subtitle()) {
             activity?.supportActionBar?.subtitle = null
         }
+    }
+
+    private fun subtitle(): String = groupName.ifEmpty { getString(R.string.perle_all_subscriptions) }
+
+    /**
+     * Lets the user choose which folder (feed group) Perle shows, or all the subscriptions.
+     */
+    private fun showGroupChooser() {
+        disposables.add(
+            viewModel.loadFeedGroups().subscribe(
+                { groups ->
+                    val context = context ?: return@subscribe
+                    val names = listOf(getString(R.string.perle_all_subscriptions)) + groups.map { it.name }
+                    val ids = listOf(FeedGroupEntity.GROUP_ALL_ID) + groups.map { it.uid }
+                    AlertDialog.Builder(context)
+                        .setTitle(R.string.perle_choose_group)
+                        .setSingleChoiceItems(names.toTypedArray(), ids.indexOf(groupId).coerceAtLeast(0)) { dialog, which ->
+                            dialog.dismiss()
+                            selectGroup(ids[which], if (which == 0) "" else names[which])
+                        }
+                        .setNegativeButton(R.string.cancel, null)
+                        .show()
+                },
+                { ErrorUtil.showSnackbar(this, ErrorInfo(it, UserAction.REQUESTED_FEED, "Loading feed groups")) }
+            )
+        )
+    }
+
+    private fun selectGroup(newGroupId: Long, newGroupName: String) {
+        groupId = newGroupId
+        groupName = newGroupName
+        // so that the same folder is shown after the fragment is recreated
+        arguments = bundleOf(KEY_GROUP_ID to groupId, KEY_GROUP_NAME to groupName)
+        activity?.supportActionBar?.subtitle = subtitle()
+        viewModel.selectGroup(groupId)
     }
 
     // /////////////////////////////////////////////////////////////////////////

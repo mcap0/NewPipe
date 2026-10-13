@@ -12,4 +12,6 @@
     <string name="perle_hidden">This video won\'t be shown again in Gems</string>
     <string name="perle_undo">Undo</string>
     <string name="perle_show_hidden">Show hidden videos again</string>
+    <string name="perle_choose_group">Folder</string>
+    <string name="perle_all_subscriptions">All subscriptions</string>
 </resources>

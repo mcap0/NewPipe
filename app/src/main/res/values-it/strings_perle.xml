@@ -12,4 +12,6 @@
     <string name="perle_hidden">Questo video non verrà più mostrato in Perle</string>
     <string name="perle_undo">Annulla</string>
     <string name="perle_show_hidden">Mostra di nuovo i video nascosti</string>
+    <string name="perle_choose_group">Cartella</string>
+    <string name="perle_all_subscriptions">Tutte le iscrizioni</string>
 </resources>

@@ -15,6 +15,12 @@
         app:showAsAction="ifRoom" />
 
     <item
+        android:id="@+id/menu_item_perle_group"
+        android:icon="@drawable/ic_filter_list"
+        android:title="@string/perle_choose_group"
+        app:showAsAction="ifRoom" />
+
+    <item
         android:id="@+id/menu_item_perle_show_hidden"
         android:title="@string/perle_show_hidden"
         app:showAsAction="never" />

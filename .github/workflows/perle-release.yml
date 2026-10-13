@@ -40,13 +40,17 @@ jobs:
           distribution: "temurin"
           cache: 'gradle'
 
-      # Optional: a stable signing key, so that new versions install over old ones.
-      # Without the secret a new debug key is generated on every run.
+      # A stable signing key, so that new versions install over the old ones and keep their
+      # data. The key in .github/perle is used unless the PERLE_DEBUG_KEYSTORE secret
+      # (a base64 encoded keystore with alias androiddebugkey and password android) is set.
       - name: restore signing key
-        if: env.PERLE_DEBUG_KEYSTORE != ''
         run: |
           mkdir -p ~/.android
-          echo "$PERLE_DEBUG_KEYSTORE" | base64 -d > ~/.android/debug.keystore
+          if [ -n "$PERLE_DEBUG_KEYSTORE" ]; then
+            echo "$PERLE_DEBUG_KEYSTORE" | base64 -d > ~/.android/debug.keystore
+          else
+            cp .github/perle/perle-signing.keystore ~/.android/debug.keystore
+          fi
 
       # testDebugUnitTest also runs checkstyle and ktlint
       - name: Build APK and run checks
@@ -66,5 +70,5 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "NewPipe Perle ($TAG)" \
-            --notes "APK of NewPipe Perle, installs next to the official NewPipe (app id org.schabi.newpipe.continuous.perle)." \
+            --notes-file .github/perle/RELEASE_NOTES.md \
             --latest

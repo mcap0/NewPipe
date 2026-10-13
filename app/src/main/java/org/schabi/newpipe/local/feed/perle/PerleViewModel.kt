@@ -18,13 +18,18 @@ import io.reactivex.rxjava3.core.Single
 import io.reactivex.rxjava3.disposables.CompositeDisposable
 import io.reactivex.rxjava3.disposables.Disposable
 import io.reactivex.rxjava3.schedulers.Schedulers
+import org.schabi.newpipe.database.feed.model.FeedGroupEntity
 import org.schabi.newpipe.database.stream.model.StreamEntity
 
-class PerleViewModel(context: Context, private val groupId: Long) : ViewModel() {
+class PerleViewModel(context: Context, groupId: Long) : ViewModel() {
     private val repository = PerleRepository(context)
 
     private val mutableState = MutableLiveData<PerleState>()
     val stateLiveData: LiveData<PerleState> = mutableState
+
+    /** The feed group (folder) whose channels are shown, or [FeedGroupEntity.GROUP_ALL_ID]. */
+    var groupId: Long = groupId
+        private set
 
     private var cache: PerleCache? = null
     private var disposable: Disposable? = null
@@ -44,13 +49,14 @@ class PerleViewModel(context: Context, private val groupId: Long) : ViewModel() 
         disposable?.dispose()
         mutableState.value = PerleState.Loading(0, 0)
 
-        val source = Single.fromCallable { PerleCacheHolder(repository.readCache(groupId)) }
+        val loadedGroupId = groupId
+        val source = Single.fromCallable { PerleCacheHolder(repository.readCache(loadedGroupId)) }
             .flatMap { holder ->
                 val cached = holder.cache
                 if (!forceRefresh && cached != null && repository.isFresh(cached)) {
                     Single.just(cached)
                 } else {
-                    repository.fetch(groupId) { done, total ->
+                    repository.fetch(loadedGroupId) { done, total ->
                         mutableState.postValue(PerleState.Loading(done, total))
                     }
                 }
@@ -62,6 +68,27 @@ class PerleViewModel(context: Context, private val groupId: Long) : ViewModel() 
             .subscribeOn(Schedulers.io())
             .observeOn(AndroidSchedulers.mainThread())
             .subscribe({ mutableState.value = it }, { mutableState.value = PerleState.Error(it) })
+    }
+
+    /**
+     * Shows the videos of another feed group (folder), from the cache if it is recent.
+     */
+    fun selectGroup(newGroupId: Long) {
+        if (newGroupId == groupId) {
+            return
+        }
+        groupId = newGroupId
+        cache = null
+        load(forceRefresh = false)
+    }
+
+    /**
+     * @return the folders the user can choose from, loaded in the background
+     */
+    fun loadFeedGroups(): Single<List<FeedGroupEntity>> {
+        return Single.fromCallable { repository.feedGroups() }
+            .subscribeOn(Schedulers.io())
+            .observeOn(AndroidSchedulers.mainThread())
     }
 
     /**

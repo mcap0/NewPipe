@@ -77,6 +77,23 @@ abstract class SubscriptionDAO : BasicDAO<SubscriptionEntity> {
     @Query("SELECT * FROM subscriptions WHERE uid = :subscriptionId")
     abstract fun getSubscription(subscriptionId: Long): SubscriptionEntity
 
+    /**
+     * @return the subscriptions in the given feed group (folder), sorted by name
+     */
+    @Query(
+        """
+        SELECT s.* FROM subscriptions s
+
+        INNER JOIN feed_group_subscription_join fgs
+        ON s.uid = fgs.subscription_id
+
+        WHERE fgs.group_id = :groupId
+
+        ORDER BY s.name COLLATE NOCASE ASC
+        """
+    )
+    abstract fun getSubscriptionsInGroup(groupId: Long): List<SubscriptionEntity>
+
     @Query("DELETE FROM subscriptions")
     abstract override fun deleteAll(): Int
 

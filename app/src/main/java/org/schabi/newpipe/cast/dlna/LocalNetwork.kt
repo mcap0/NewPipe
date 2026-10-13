@@ -20,7 +20,8 @@ object LocalNetwork {
     /**
      * Finds the IPv4 address of the phone on the local network. Wi-Fi interfaces (`wlan*`) are
      * preferred, then other interfaces with a private address (Ethernet, hotspot, ...).
-     * Mobile data interfaces never have private addresses usable by the TV, so they are skipped.
+     * Mobile data and VPN interfaces are skipped: carriers and VPNs often use private addresses
+     * too, but the TV cannot reach them.
      *
      * @return the address, or null if the phone is not connected to a local network
      */
@@ -34,7 +35,7 @@ object LocalNetwork {
         }
         for (networkInterface in interfaces) {
             try {
-                if (!networkInterface.isUp || networkInterface.isLoopback) {
+                if (!networkInterface.isUp || networkInterface.isLoopback || isExcluded(networkInterface.name)) {
                     continue
                 }
                 for (address in Collections.list(networkInterface.inetAddresses)) {
@@ -52,6 +53,10 @@ object LocalNetwork {
         )
         return candidates.sortedBy { priorityOf(it.networkInterface.name) }.firstOrNull()
     }
+
+    private val EXCLUDED_PREFIXES = listOf("rmnet", "rev_rmnet", "ccmni", "pdp", "v4-", "tun", "ppp", "dummy", "ipsec")
+
+    private fun isExcluded(name: String) = EXCLUDED_PREFIXES.any { name.startsWith(it) }
 
     private fun priorityOf(name: String): Int = when {
         name.startsWith("wlan") -> 0
