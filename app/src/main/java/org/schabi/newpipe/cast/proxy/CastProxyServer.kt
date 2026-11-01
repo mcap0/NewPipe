@@ -90,6 +90,9 @@ class CastProxyServer(
     )
 
     private val entries = ConcurrentHashMap<String, Entry>()
+
+    // the open connections of the TV, closed before it gets a new address (see closeClients)
+    private val clients: MutableSet<Socket> = ConcurrentHashMap.newKeySet()
     private val random = SecureRandom()
 
     @Volatile
@@ -190,7 +193,31 @@ class CastProxyServer(
         }
     }
 
+    /**
+     * Closes every connection the TV has open. A new address while the TV still holds a stream
+     * that sends no data wedges a Samsung TV: SetAVTransportURI answers 701 "Transition not
+     * available" for good, and Stop makes it stop answering at all. Found with the Lumia app's
+     * tools/tvlab (dumbphone), where this is the first step of every new address.
+     */
+    fun closeClients() {
+        val open = clients.toList()
+        open.forEach { runCatching { it.close() } }
+        clients.removeAll(open.toSet())
+        if (open.isNotEmpty()) {
+            CastLog.d("Proxy: closed ${open.size} connection(s) of the TV")
+        }
+    }
+
     private fun handleClient(client: Socket) {
+        clients.add(client)
+        try {
+            serveClient(client)
+        } finally {
+            clients.remove(client)
+        }
+    }
+
+    private fun serveClient(client: Socket) {
         client.use { socket ->
             try {
                 socket.soTimeout = CLIENT_TIMEOUT_MILLIS

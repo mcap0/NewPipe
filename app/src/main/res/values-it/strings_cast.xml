@@ -26,6 +26,10 @@
     <string name="cast_error_tv">Il TV ha rifiutato la richiesta: %1$s</string>
     <string name="cast_error_live_refused">Il TV ha rifiutato lo stream MPEG-TS in diretta: %1$s</string>
     <string name="cast_error_unreachable">Il TV non è raggiungibile</string>
+    <string name="cast_error_unreachable_waiting">Il TV non risponde: aspetto che torni…</string>
+    <string name="cast_resuming">Ripresa sul TV…</string>
+    <string name="cast_back_30_description">Indietro di 30 secondi</string>
+    <string name="cast_forward_30_description">Avanti di 30 secondi</string>
 
     <string name="cast_direct_link_title">Invia link diretto</string>
     <string name="cast_direct_link_summary">Passa al TV il link originale del video invece di farlo passare dal telefono. Solo per TV che supportano HTTPS; YouTube potrebbe rifiutare il TV.</string>

@@ -29,6 +29,12 @@
     <string name="cast_error_tv">The TV refused the request: %1$s</string>
     <string name="cast_error_live_refused">The TV refused the live MPEG-TS stream: %1$s</string>
     <string name="cast_error_unreachable">The TV cannot be reached</string>
+    <string name="cast_error_unreachable_waiting">The TV does not answer: waiting for it to come back…</string>
+    <string name="cast_resuming">Resuming on the TV…</string>
+    <string name="cast_back_30" translatable="false">−30</string>
+    <string name="cast_forward_30" translatable="false">+30</string>
+    <string name="cast_back_30_description">Back 30 seconds</string>
+    <string name="cast_forward_30_description">Forward 30 seconds</string>
 
     <string name="cast_direct_link_title">Send direct link</string>
     <string name="cast_direct_link_summary">Give the TV the original video link instead of streaming it through the phone. Only for TVs that support HTTPS; YouTube may refuse the TV.</string>

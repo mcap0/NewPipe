@@ -7,6 +7,8 @@ package org.schabi.newpipe.cast
 
 import android.graphics.Typeface
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.MenuItem
 import android.view.View
 import android.widget.SeekBar
@@ -33,6 +35,15 @@ class CastControllerActivity : AppCompatActivity() {
     private var shownQueue: Pair<List<CastQueueEntry>, Int>? = null
     private var state = CastState()
 
+    // −30 / +30: taps in a row add up on the position shown, only the last one seeks (the TV
+    // restarts its stream on every seek of a live MPEG-TS cast)
+    private var skipTarget: Long? = null
+    private val skipHandler = Handler(Looper.getMainLooper())
+    private val skipRunnable = Runnable {
+        skipTarget?.let { CastService.seek(this, it) }
+        skipTarget = null
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         ThemeHelper.setTheme(this)
         super.onCreate(savedInstanceState)
@@ -52,6 +63,8 @@ class CastControllerActivity : AppCompatActivity() {
             finish()
         }
         binding.castNext.setOnClickListener { CastService.next(this) }
+        binding.castBack30.setOnClickListener { skipBy(-SKIP_SECONDS) }
+        binding.castForward30.setOnClickListener { skipBy(SKIP_SECONDS) }
         binding.castVolumeUp.setOnClickListener { CastService.volumeUp(this) }
         binding.castVolumeDown.setOnClickListener { CastService.volumeDown(this) }
         binding.castQuality.setOnClickListener { chooseQuality() }
@@ -76,6 +89,28 @@ class CastControllerActivity : AppCompatActivity() {
         })
 
         CastService.state.observe(this) { render(it) }
+    }
+
+    private fun skipBy(delta: Long) {
+        val base = skipTarget ?: state.positionSeconds.coerceAtLeast(0)
+        var target = (base + delta).coerceAtLeast(0)
+        if (state.durationSeconds > SKIP_END_MARGIN) {
+            target = target.coerceAtMost(state.durationSeconds - SKIP_END_MARGIN)
+        }
+        skipTarget = target
+        binding.castSeekBar.progress = target.toInt()
+        binding.castPosition.text = Localization.getDurationString(target)
+        skipHandler.removeCallbacks(skipRunnable)
+        skipHandler.postDelayed(skipRunnable, SKIP_DELAY_MILLIS)
+    }
+
+    override fun onDestroy() {
+        // a skip still waiting is not lost when the screen closes
+        if (skipTarget != null) {
+            skipHandler.removeCallbacks(skipRunnable)
+            skipRunnable.run()
+        }
+        super.onDestroy()
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
@@ -107,6 +142,8 @@ class CastControllerActivity : AppCompatActivity() {
             if (state.status == CastStatus.PLAYING) R.drawable.ic_pause else R.drawable.ic_play_arrow
         )
         binding.castStop.isEnabled = controlsEnabled
+        binding.castBack30.isEnabled = controlsEnabled
+        binding.castForward30.isEnabled = controlsEnabled
         val hasNext = state.queueIndex + 1 < state.queue.size
         binding.castNext.isEnabled = controlsEnabled && hasNext
         binding.castNext.alpha = if (hasNext) 1f else DISABLED_ALPHA
@@ -119,7 +156,7 @@ class CastControllerActivity : AppCompatActivity() {
         } else {
             binding.castDuration.text = ""
         }
-        if (!isUserSeeking) {
+        if (!isUserSeeking && skipTarget == null) {
             val position = state.positionSeconds.coerceAtLeast(0)
             binding.castSeekBar.progress = position.toInt()
             binding.castPosition.text = Localization.getDurationString(position)
@@ -227,5 +264,8 @@ class CastControllerActivity : AppCompatActivity() {
 
     companion object {
         private const val DISABLED_ALPHA = 0.3f
+        private const val SKIP_SECONDS = 30L
+        private const val SKIP_END_MARGIN = 5L
+        private const val SKIP_DELAY_MILLIS = 700L
     }
 }

@@ -106,16 +106,40 @@
                     android:scaleType="center"
                     android:src="@drawable/ic_stop" />
 
+                <TextView
+                    android:id="@+id/cast_back_30"
+                    android:layout_width="56dp"
+                    android:layout_height="56dp"
+                    android:layout_marginStart="8dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/cast_back_30_description"
+                    android:gravity="center"
+                    android:text="@string/cast_back_30"
+                    android:textAppearance="?android:attr/textAppearanceMedium"
+                    android:textStyle="bold" />
+
                 <ImageButton
                     android:id="@+id/cast_play_pause"
                     android:layout_width="80dp"
                     android:layout_height="80dp"
-                    android:layout_marginHorizontal="24dp"
+                    android:layout_marginHorizontal="4dp"
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="@string/cast_play_pause"
                     android:scaleType="fitCenter"
                     android:padding="16dp"
                     android:src="@drawable/ic_pause" />
+
+                <TextView
+                    android:id="@+id/cast_forward_30"
+                    android:layout_width="56dp"
+                    android:layout_height="56dp"
+                    android:layout_marginEnd="8dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/cast_forward_30_description"
+                    android:gravity="center"
+                    android:text="@string/cast_forward_30"
+                    android:textAppearance="?android:attr/textAppearanceMedium"
+                    android:textStyle="bold" />
 
                 <ImageButton
                     android:id="@+id/cast_next"

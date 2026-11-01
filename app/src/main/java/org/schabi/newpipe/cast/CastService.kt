@@ -137,6 +137,12 @@ class CastService : Service() {
     private var fallbackNotice: String? = null
     private var stoppedPolls = 0
     private var failedPolls = 0
+
+    // automatic restarts of the current video after the TV stopped, got stuck or came back
+    private var resumes = 0
+
+    // since when the TV says TRANSITIONING after it had played (it may never come out of it)
+    private var transitioningSince = 0L
     private var polls = 0
     private var sessionId = 0
 
@@ -308,10 +314,14 @@ class CastService : Service() {
      * @param isNewVideo false when the same video is sent again with other streams
      * @return false if the session failed
      */
-    private fun playCurrent(startSeconds: Long?, isNewVideo: Boolean = true): Boolean {
+    private fun playCurrent(startSeconds: Long?, isNewVideo: Boolean = true, isResume: Boolean = false): Boolean {
         val dlna = client ?: return false
         val server = proxy ?: return false
         val item = queue.getOrNull(queueIndex) ?: return false
+        if (!isResume) {
+            resumes = 0
+        }
+        transitioningSince = 0
         hasPlayed = false
         stoppedPolls = 0
         failedPolls = 0
@@ -350,9 +360,7 @@ class CastService : Service() {
 
         val castMedia = prepareMedia(media, dlna, server, start)
         try {
-            stopIfBusy(dlna)
-            setUriWithRetries(dlna, castMedia)
-            playWithRetries(dlna)
+            sendToTv(dlna, castMedia)
         } catch (e: UpnpException) {
             val error = "${e.errorCode} ${e.errorDescription}"
             // still busy after the retries: the TV is usually off, or showing another app
@@ -399,21 +407,34 @@ class CastService : Service() {
     }
 
     /**
-     * While it is still switching from the previous video, the TV answers SetAVTransportURI
-     * with 701 "Transition not available": stop it and try again.
+     * A new address for the TV, the way that never wedged the Samsung of the Lumia app's tests
+     * (tools/tvlab in dumbphone, 6/6 from a wedged TV): the TV's connections to the proxy are
+     * closed first, then Stop, then the address again and again while the TV answers 701
+     * ("Transition not available": it is still finishing the previous one; retrying only Play
+     * would play the OLD address), then Play again and again (701 for ~2 s while it opens the
+     * stream).
      */
-    private fun setUriWithRetries(dlna: DlnaClient, media: CastMedia) {
+    private fun sendToTv(dlna: DlnaClient, media: CastMedia) {
+        proxy?.closeClients()
+        stopIfBusy(dlna)
+        val uriTries = setUriWithRetries(dlna, media)
+        val playTries = playWithRetries(dlna)
+        if (uriTries > 1 || playTries > 1) {
+            CastLog.d("The TV took the address after $uriTries tries, Play after $playTries")
+        }
+    }
+
+    /** @return how many times the address was sent */
+    private fun setUriWithRetries(dlna: DlnaClient, media: CastMedia): Int {
         var attempt = 0
         while (true) {
             try {
                 dlna.setAvTransportUri(media)
-                return
+                return attempt + 1
             } catch (e: UpnpException) {
                 if (e.errorCode != ERROR_TRANSITION_NOT_AVAILABLE || ++attempt >= PLAY_ATTEMPTS) {
                     throw e
                 }
-                CastLog.d("The TV is busy, stopping it and retrying in 1 second")
-                runCatching { dlna.stop() }
                 Thread.sleep(1000)
             }
         }
@@ -524,12 +545,12 @@ class CastService : Service() {
     }
 
     /** Right after SetAVTransportURI some TVs answer Play with 701 until they are ready. */
-    private fun playWithRetries(dlna: DlnaClient) {
+    private fun playWithRetries(dlna: DlnaClient): Int {
         var attempt = 0
         while (true) {
             try {
                 dlna.play()
-                return
+                return attempt + 1
             } catch (e: UpnpException) {
                 if (e.errorCode != ERROR_TRANSITION_NOT_AVAILABLE || ++attempt >= PLAY_ATTEMPTS) {
                     throw e
@@ -548,6 +569,12 @@ class CastService : Service() {
         try {
             val transport = dlna.getTransportInfo()
             val position = dlna.getPositionInfo()
+            if (failedPolls >= FAILED_POLLS_BEFORE_ERROR) {
+                // the TV is back (turned on again, back from another input): a fresh round of resumes
+                CastLog.d("The TV answers again after $failedPolls failed polls ($transport)")
+                resumes = 0
+                publish(currentState.copy(error = fallbackNotice))
+            }
             failedPolls = 0
 
             val status = when (transport) {
@@ -619,13 +646,50 @@ class CastService : Service() {
             }
             if (hasPlayed && stoppedPolls >= STOPPED_POLLS_BEFORE_END) {
                 onTvStopped()
+                return
+            }
+            // after it played, a TV can stay TRANSITIONING for good (its stream stalled): restart it
+            if (hasPlayed && transport == TransportState.TRANSITIONING) {
+                val now = System.currentTimeMillis()
+                if (transitioningSince == 0L) {
+                    transitioningSince = now
+                } else if (now - transitioningSince > STUCK_MILLIS) {
+                    transitioningSince = 0
+                    resume("stuck in TRANSITIONING for ${STUCK_MILLIS / 1000}s")
+                }
+            } else {
+                transitioningSince = 0
             }
         } catch (e: Exception) {
+            // turned off, another input, Wi-Fi gone: keep the session and wait for it to come back
             failedPolls++
-            if (failedPolls >= FAILED_POLLS_BEFORE_ERROR) {
+            if (failedPolls == FAILED_POLLS_BEFORE_ERROR) {
+                CastLog.w("The TV does not answer: ${e.message}")
+                publish(currentState.copy(error = getString(R.string.cast_error_unreachable_waiting)))
+            }
+            if (failedPolls >= FAILED_POLLS_BEFORE_END) {
                 fail(getString(R.string.cast_error_unreachable))
             }
         }
+    }
+
+    /**
+     * The current video again from the last position seen, with fresh streams (the old URLs may
+     * have expired). At most [MAX_RESUMES] times in a row, so a video the TV keeps dropping ends.
+     *
+     * @return false if no resume is left
+     */
+    private fun resume(reason: String): Boolean {
+        if (resumes >= MAX_RESUMES) {
+            return false
+        }
+        resumes++
+        val position = lastPosition.coerceAtLeast(0)
+        CastLog.w("The TV $reason at ${position}s: resuming ($resumes/$MAX_RESUMES)")
+        publish(currentState.copy(status = CastStatus.BUFFERING, error = getString(R.string.cast_resuming)))
+        saveProgress()
+        playCurrent(startSeconds = position, isNewVideo = false, isResume = true)
+        return true
     }
 
     /** The TV stopped by itself: at the end of the video the queue continues. */
@@ -635,6 +699,9 @@ class CastService : Service() {
         val ended = duration <= 0 || lastPosition >= duration - END_MARGIN_SECONDS
         if (ended && item != null && duration > 0) {
             lastPosition = duration
+        }
+        if (!ended && resume("stopped by itself")) {
+            return
         }
         if (ended && queueIndex + 1 < queue.size) {
             CastLog.d("The video ended, playing the next one of the queue")
@@ -743,9 +810,7 @@ class CastService : Service() {
         if (liveMedia != null) {
             // a live stream cannot be seeked: the TV gets a new one starting at that time
             try {
-                stopIfBusy(dlna)
-                setUriWithRetries(dlna, liveMediaAt(positionSeconds, server))
-                playWithRetries(dlna)
+                sendToTv(dlna, liveMediaAt(positionSeconds, server))
                 playRequestedAt = System.currentTimeMillis()
                 lastPosition = positionSeconds
                 hasPlayed = false
@@ -761,7 +826,9 @@ class CastService : Service() {
             lastPosition = positionSeconds
             publish(currentState.copy(positionSeconds = positionSeconds))
         } catch (e: Exception) {
-            showCommandError(e)
+            // a TV that refuses the seek (busy, wedged) gets the video again from there
+            CastLog.w("Seek to ${positionSeconds}s refused (${e.message}), sending the video again from there")
+            playCurrent(startSeconds = positionSeconds, isNewVideo = false)
         }
     }
 
@@ -1025,13 +1092,18 @@ class CastService : Service() {
         private const val EXTRA_INDEX = "index"
 
         private const val ERROR_TRANSITION_NOT_AVAILABLE = 701
-        private const val PLAY_ATTEMPTS = 4
+        private const val PLAY_ATTEMPTS = 15
         private const val STOP_WAIT_POLLS = 10
         private const val STOP_WAIT_MILLIS = 300L
         private const val STOPPED_POLLS_BEFORE_END = 3
         private const val START_TIMEOUT_MILLIS = 25_000L
         private const val STOPPED_GRACE_MILLIS = 5_000L
         private const val FAILED_POLLS_BEFORE_ERROR = 8
+
+        // a TV that does not answer for 5 minutes is gone: the session ends
+        private const val FAILED_POLLS_BEFORE_END = 300
+        private const val MAX_RESUMES = 3
+        private const val STUCK_MILLIS = 30_000L
         private const val SAVE_EVERY_POLLS = 5
         private const val END_MARGIN_SECONDS = 15
         private const val VOLUME_STEP = 2
