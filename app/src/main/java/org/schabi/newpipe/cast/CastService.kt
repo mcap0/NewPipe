@@ -48,6 +48,7 @@ import org.schabi.newpipe.cast.dlna.PositionInfo
 import org.schabi.newpipe.cast.dlna.SrtConverter
 import org.schabi.newpipe.cast.dlna.TransportState
 import org.schabi.newpipe.cast.dlna.UpnpException
+import org.schabi.newpipe.cast.hls.HlsStreamServer
 import org.schabi.newpipe.cast.proxy.CastProxyServer
 import org.schabi.newpipe.extractor.stream.SubtitlesStream
 import org.schabi.newpipe.local.history.HistoryRecordManager
@@ -124,6 +125,7 @@ class CastService : Service() {
     private var device: DlnaDevice? = null
     private var client: DlnaClient? = null
     private var proxy: CastProxyServer? = null
+    private var hlsServer: HlsStreamServer? = null
     private var polling: ScheduledFuture<*>? = null
     private var active = false
 
@@ -312,13 +314,6 @@ class CastService : Service() {
         pendingSeek = -1
         publish(stateForCurrent(item).copy(status = CastStatus.BUFFERING, positionSeconds = from, error = null))
 
-        val audioTrack = item.audioTrackId
-            ?: item.audioTrackForLanguage(item.audioLanguage ?: savedAudioLanguage())
-        val choice = item.choose(maxHeight, audioTrack)?.let { IosStreamUrls.withIosUrls(it, item.info.id) }
-        if (choice == null) {
-            return prepareFailed(item, getString(R.string.cast_error_no_stream))
-        }
-        currentChoice = choice
         currentSubtitles = item.findSubtitles(wantedSubtitles)
         currentSrt = currentSubtitles?.let { loadSrt(it) }
 
@@ -326,14 +321,76 @@ class CastService : Service() {
         // (701 forever). First the old server and all its connections, then Stop, then the new
         // address; this is not done for the very first start, which has no old server.
         val oldProxy = proxy
-        if (oldProxy != null) {
-            oldProxy.stop()
+        val oldHls = hlsServer
+        if (oldProxy != null || oldHls != null) {
+            oldHls?.shutdown()
+            oldProxy?.stop()
             runCatching { dlna.stop() }
         }
         proxy = null
+        hlsServer = null
         liveStream = null
         liveMedia = null
         progressiveMedia = null
+        currentChoice = null
+
+        // YouTube: always the HLS stream of the visionOS client, exactly like the Lumia app
+        // (CastSession::PlayCurrent + StreamServer). Videos without HLS (other services) use
+        // the DASH / MP4 path below; a failure here is reported, never retried on the other path.
+        val hlsUrl = item.info.hlsUrl
+        if (!hlsUrl.isNullOrEmpty()) {
+            try {
+                val local = LocalNetwork.find() ?: throw IllegalStateException("No local network address")
+                val server = HlsStreamServer(local.address, DownloaderImpl.getInstance().client)
+                server.maxHeight = maxHeight
+                hlsServer = server
+                val localUrl = server.start(hlsUrl, item.audioLanguage ?: savedAudioLanguage(), currentSrt)
+                duration = server.durationSeconds
+                item.durationSeconds = if (duration > 0) duration else -1
+                if (duration > 0 && from >= duration - END_MARGIN_SECONDS) {
+                    from = 0
+                }
+                liveStream = CastProxyServer.LiveStream(
+                    url = "$localUrl/v.ts",
+                    // startAt adds the start, the cues follow the stream
+                    subtitleUrl = currentSrt?.let { "$localUrl/s.srt" },
+                    durationSeconds = duration
+                )
+                liveMedia = CastMedia(
+                    url = "",
+                    title = item.title,
+                    uploader = item.uploader,
+                    mimeType = LIVE_MIME_TYPE,
+                    durationSeconds = item.durationSeconds
+                )
+            } catch (e: Exception) {
+                return prepareFailed(item, e.message ?: getString(R.string.cast_error_no_wifi))
+            }
+            val started = startAt(from)
+            CastLog.d(
+                "play \"${item.title}\" from ${from}s of ${duration}s, ${hlsServer?.height ?: 0}p (hls)" +
+                    if (started) "" else ", FAILED: $sessionError"
+            )
+            publish(
+                stateForCurrent(item).copy(
+                    status = if (started) CastStatus.BUFFERING else CastStatus.ERROR,
+                    positionSeconds = from,
+                    error = sessionError.takeIf { it.isNotEmpty() }
+                )
+            )
+            if (started && isNewVideo) {
+                markAsViewed(item)
+            }
+            return started
+        }
+
+        val audioTrack = item.audioTrackId
+            ?: item.audioTrackForLanguage(item.audioLanguage ?: savedAudioLanguage())
+        val choice = item.choose(maxHeight, audioTrack)?.let { IosStreamUrls.withIosUrls(it, item.info.id) }
+        if (choice == null) {
+            return prepareFailed(item, getString(R.string.cast_error_no_stream))
+        }
+        currentChoice = choice
 
         try {
             val local = LocalNetwork.find() ?: throw IllegalStateException("No local network address")
@@ -514,6 +571,8 @@ class CastService : Service() {
         polling = null
         proxy?.stop()
         proxy = null
+        hlsServer?.shutdown()
+        hlsServer = null
         client = null
         device = null
         liveStream = null
@@ -578,6 +637,15 @@ class CastService : Service() {
             return
         }
         val item = queue.current()
+        val hls = hlsServer
+        if (hls != null) {
+            // the audio renditions of the HLS master, like CastSession::SetAudio
+            val language = hls.audioOptions.getOrNull(index)?.language ?: return
+            item.audioLanguage = language
+            saveAudioLanguage(language)
+            playCurrent(currentPosition(), isNewVideo = false)
+            return
+        }
         val trackId = item.audioTrackIds.getOrNull(index) ?: return
         item.audioTrackId = trackId
         item.audioLanguage = item.audioLanguageOf(trackId)
@@ -831,6 +899,13 @@ class CastService : Service() {
         val audioTrackId = item.audioTrackId
             ?: item.audioTrackForLanguage(item.audioLanguage ?: savedAudioLanguage())
             ?: item.audioTrackIds.firstOrNull()
+        val hls = hlsServer
+        // the qualities and audio tracks of the HLS master, like CastSession::Publish
+        val audioNames = hls?.audioOptions?.map { option ->
+            var name = option.name.ifEmpty { "Audio" }
+            if (option.language.isNotEmpty() && option.language != name) name += " (${option.language})"
+            name
+        }
         return currentState.copy(
             active = true,
             deviceName = device?.friendlyName.orEmpty(),
@@ -841,10 +916,11 @@ class CastService : Service() {
             positionSeconds = position,
             queue = queueEntries(),
             queueIndex = queue.index,
-            qualities = item.qualities,
-            quality = choice?.height ?: 0,
-            audioTracks = item.audioTrackIds.map { item.audioTrackName(this, it) },
-            audioTrack = item.audioTrackIds.indexOf(audioTrackId).coerceAtLeast(0),
+            qualities = hls?.heights ?: item.qualities,
+            quality = hls?.height ?: choice?.height ?: 0,
+            audioTracks = audioNames?.takeIf { it.size > 1 }
+                ?: if (hls != null) emptyList() else item.audioTrackIds.map { item.audioTrackName(this, it) },
+            audioTrack = if (hls != null) hls.audioIndex else item.audioTrackIds.indexOf(audioTrackId).coerceAtLeast(0),
             subtitles = item.subtitles.map { item.subtitleName(this, it) },
             subtitle = currentSubtitles?.let { item.subtitles.indexOf(it) } ?: -1
         )

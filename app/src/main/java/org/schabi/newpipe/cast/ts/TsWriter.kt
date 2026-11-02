@@ -114,7 +114,8 @@ class TsWriter(private val output: OutputStream) {
         }
     }
 
-    private fun writeSection(pid: Int, section: ByteArray) {
+    /** Writes one PSI section (with its CRC) in a single packet. */
+    fun writeSection(pid: Int, section: ByteArray) {
         packet.fill(0xFF.toByte())
         packet[0] = SYNC_BYTE
         packet[1] = (0x40 or (pid shr 8 and 0x1F)).toByte()
