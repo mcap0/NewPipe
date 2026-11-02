@@ -60,13 +60,14 @@ data class CastChoice(val single: CastStreamCandidate?, val dash: CastDash?) {
 /**
  * Chooses the stream sent to the TV.
  *
- * DLNA renderers play best one file with both audio and video, so "progressive" MP4 streams with
- * audio are used first, at the highest resolution up to [MAX_HEIGHT]. YouTube rarely offers them
- * nowadays, so otherwise a video-only MP4 and an M4A audio stream, chosen by [selectDash], are
- * muxed by the cast proxy into one MPEG-TS stream while they are sent.
+ * The Lumia app always sends the highest H.264 variant up to 1080p, with the lowest bitrate at
+ * that resolution, and muxes it into MPEG-TS. Android does the same with the DASH streams: the
+ * separate video and audio streams are muxed by the cast proxy. A progressive MP4 with audio is
+ * only used when there is no muxable DASH pair, which the Lumia app does not need (every video
+ * there has an HLS master).
  */
 object CastStreamSelector {
-    const val MAX_HEIGHT = 720
+    const val MAX_HEIGHT = 1080
     const val MAX_DASH_HEIGHT = 1080
     const val MP4_MIME_TYPE = "video/mp4"
     const val M4A_MIME_TYPE = "audio/mp4"
@@ -74,7 +75,9 @@ object CastStreamSelector {
     /**
      * @param maxHeight the highest resolution wanted, at most [MAX_HEIGHT]
      */
-    fun select(candidates: List<CastStreamCandidate>, maxHeight: Int = MAX_HEIGHT): CastStreamCandidate? = usableProgressive(candidates).filter { it.height <= minOf(maxHeight, MAX_HEIGHT) }.maxByOrNull { it.height }
+    fun select(candidates: List<CastStreamCandidate>, maxHeight: Int = MAX_HEIGHT): CastStreamCandidate? = usableProgressive(candidates)
+        .filter { it.height <= minOf(maxHeight, MAX_HEIGHT) }
+        .maxWithOrNull(compareBy<CastStreamCandidate> { it.height }.thenByDescending { it.bitrate })
 
     /**
      * Chooses a video-only H.264 MP4 stream up to [MAX_DASH_HEIGHT] and an AAC M4A stream
@@ -92,9 +95,9 @@ object CastStreamSelector {
         audioTrackId: String? = null
     ): CastDash? {
         val usableVideos = usableDashVideos(videos)
-        val video = usableVideos.filter { it.height <= maxHeight }.maxOfHeight()
-            ?: usableVideos.minByOrNull { it.height }
-            ?: return null
+        val video = usableVideos.filter { it.height <= maxHeight }.maxWithOrNull(
+            compareBy<CastStreamCandidate> { it.height }.thenByDescending { it.bitrate }
+        ) ?: usableVideos.minByOrNull { it.height } ?: return null
 
         val usableAudios = usableDashAudios(audios)
         val ofTrack = usableAudios.filter { audioTrackId != null && it.trackId == audioTrackId }
@@ -132,10 +135,10 @@ object CastStreamSelector {
     /**
      * Chooses what to cast for the user's choices.
      *
-     * @param height the wanted resolution, null for automatic: a progressive MP4 if there is one
-     * (the TV can seek in it), otherwise the best muxed streams
+     * @param height the highest resolution wanted, at most [MAX_DASH_HEIGHT]; null for the
+     * Lumia app's default of 1080p
      * @param audioTrackId the wanted audio track, null for the original one. Another track is
-     * only available as a separate stream, so it is always muxed.
+     * only available as a separate stream, so it always selects the muxed streams.
      */
     fun choose(
         progressive: List<CastStreamCandidate>,
@@ -144,32 +147,25 @@ object CastStreamSelector {
         height: Int? = null,
         audioTrackId: String? = null
     ): CastChoice? {
-        val wantsOtherAudio = audioTrackId != null &&
-            usableDashAudios(audios).any { it.trackId == audioTrackId && !it.isOriginal }
-        if (!wantsOtherAudio) {
-            val single = if (height == null) {
-                select(progressive)
-            } else {
-                usableProgressive(progressive).firstOrNull { it.height == height }
-            }
-            if (single != null) {
-                return CastChoice(single, null)
-            }
-        }
+        // like the Lumia app: the best H.264 variant up to the wanted height, always muxed
         val dash = selectDash(videoOnly, audios, height ?: MAX_DASH_HEIGHT, audioTrackId)
         if (dash != null) {
             return CastChoice(null, dash)
         }
-        // e.g. a resolution available only as progressive MP4 with another audio track asked
+        // only for videos without muxable DASH streams: a progressive MP4 with audio
         return select(progressive, height ?: MAX_HEIGHT)?.let { CastChoice(it, null) }
-            ?: select(progressive)?.let { CastChoice(it, null) }
     }
 
-    /** @return the resolutions that can be cast, highest first */
+    /**
+     * @return the resolutions that can be cast, highest first: the DASH heights like the Lumia
+     * app's quality menu, or the progressive ones when there are no DASH streams
+     */
     fun qualities(progressive: List<CastStreamCandidate>, videoOnly: List<CastStreamCandidate>): List<Int> {
-        val progressiveHeights = usableProgressive(progressive).map { it.height }.filter { it in 1..MAX_HEIGHT }
-        val dashHeights = usableDashVideos(videoOnly).map { it.height }
-        return (progressiveHeights + dashHeights).distinct().sortedDescending()
+        val dashHeights = usableDashVideos(videoOnly).map { it.height }.filter { it in 1..MAX_DASH_HEIGHT }
+        val heights = dashHeights.ifEmpty {
+            usableProgressive(progressive).map { it.height }.filter { it in 1..MAX_HEIGHT }
+        }
+        return heights.distinct().sortedDescending()
     }
 
     /**
@@ -214,8 +210,6 @@ object CastStreamSelector {
     fun rangeOf(start: Int, end: Int): LongRange? = if (start >= 0 && end > start) start.toLong()..end.toLong() else null
 
     private fun hasRanges(initRange: LongRange?, indexRange: LongRange?) = initRange != null && indexRange != null
-
-    private fun List<CastStreamCandidate>.maxOfHeight() = maxWithOrNull(compareBy<CastStreamCandidate> { it.height }.thenBy { it.bitrate })
 
     private fun String?.startsWithIgnoreCase(prefix: String) = this?.startsWith(prefix, ignoreCase = true) == true
 

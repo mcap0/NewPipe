@@ -149,8 +149,14 @@ class RangedInputStream(
         private const val RETRY_DELAY_MILLIS = 500L
 
         /** Downloads the bytes from [start] to [end] (both included). */
-        fun readRange(upstream: Upstream, url: String, start: Long, end: Long): ByteArray {
-            upstream.open(url, HttpRange(start, end)).use { response ->
+        fun readRange(
+            upstream: Upstream,
+            url: String,
+            start: Long,
+            end: Long,
+            timeoutSeconds: Int = 0
+        ): ByteArray {
+            upstream.open(url, HttpRange(start, end), timeoutSeconds).use { response ->
                 if (response.code != 206 && response.code != 200) {
                     throw IOException("HTTP ${response.code} for range $start-$end")
                 }

@@ -32,29 +32,29 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import org.schabi.newpipe.BuildConfig
 import org.schabi.newpipe.DownloaderImpl
 import org.schabi.newpipe.R
 import org.schabi.newpipe.cast.dlna.CastChoice
-import org.schabi.newpipe.cast.dlna.CastDash
 import org.schabi.newpipe.cast.dlna.CastLog
 import org.schabi.newpipe.cast.dlna.CastMedia
+import org.schabi.newpipe.cast.dlna.CastStreamSelector
 import org.schabi.newpipe.cast.dlna.DidlLite
 import org.schabi.newpipe.cast.dlna.DlnaClient
 import org.schabi.newpipe.cast.dlna.DlnaDevice
 import org.schabi.newpipe.cast.dlna.LocalNetwork
+import org.schabi.newpipe.cast.dlna.PositionInfo
 import org.schabi.newpipe.cast.dlna.SrtConverter
 import org.schabi.newpipe.cast.dlna.TransportState
-import org.schabi.newpipe.cast.dlna.TsFormat
 import org.schabi.newpipe.cast.dlna.UpnpException
 import org.schabi.newpipe.cast.proxy.CastProxyServer
-import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.SubtitlesStream
 import org.schabi.newpipe.local.history.HistoryRecordManager
 import org.schabi.newpipe.player.helper.PlayerHolder
 import org.schabi.newpipe.util.DependentPreferenceHelper
 
-/** What the TV is doing, as shown in the controller and in the notification. */
+/** State of the cast session, as shown by the controller. */
 enum class CastStatus(@StringRes val text: Int) {
     CONNECTING(R.string.cast_status_connecting),
     BUFFERING(R.string.cast_status_buffering),
@@ -74,7 +74,6 @@ data class CastQueueEntry(val title: String, val uploader: String, val durationS
  * @param error a user readable error, null if everything is fine
  * @param qualities the resolutions that can be chosen, highest first
  * @param quality the resolution being cast, 0 if unknown
- * @param autoQuality true if the user did not choose a resolution
  * @param audioTracks the names of the audio tracks that can be chosen, empty if only one
  * @param audioTrack the index in [audioTracks] of the track being cast
  * @param subtitles the names of the subtitles that can be chosen
@@ -97,7 +96,6 @@ data class CastState(
     val queueIndex: Int = 0,
     val qualities: List<Int> = emptyList(),
     val quality: Int = 0,
-    val autoQuality: Boolean = true,
     val audioTracks: List<String> = emptyList(),
     val audioTrack: Int = 0,
     val subtitles: List<String> = emptyList(),
@@ -106,12 +104,14 @@ data class CastState(
 
 /**
  * Foreground service which owns a cast session: it runs the local proxy, sends the videos of
- * the queue to the TV one after the other, polls the TV every second for its state and handles
- * the commands from the controller and the notification. Being a foreground service, the
- * session continues when NewPipe is in the background.
+ * the queue to the TV one after the other, polls the TV every two seconds for its state and
+ * handles the commands from the controller and the notification.
  *
- * The position reached is saved in the history like for the local player, so that the video
- * continues from there, on the TV or on the phone.
+ * The session, the queue and the transport are a port of the Lumia app in
+ * `apps/PerleTV/PerleCast` (dumbphone): the TV is stopped and its connections are closed only
+ * when a new address is sent, a resume after the TV stopped reuses the same server, and a TV
+ * which does not answer is waited for instead of ending the session. Those rules are delicate
+ * and got their shape from long testing on a Samsung TV, so they are kept as they are.
  *
  * All the network work happens on a single worker thread, so commands are executed in order.
  */
@@ -124,54 +124,35 @@ class CastService : Service() {
     private var device: DlnaDevice? = null
     private var client: DlnaClient? = null
     private var proxy: CastProxyServer? = null
-    private var sinkProtocolInfo: String? = null
-    private var sinkProtocolInfoLoaded = false
     private var polling: ScheduledFuture<*>? = null
-    private var hasPlayed = false
+    private var active = false
 
-    // when the TV was asked to play, to notice a video it cannot play
-    private var playRequestedAt = 0L
-    private var lastLoggedTransport: TransportState? = null
-
-    // shown while the video plays at a lower resolution than wanted
-    private var fallbackNotice: String? = null
-    private var stoppedPolls = 0
+    private val queue = CastQueue<CastItem>()
+    private var maxHeight = DEFAULT_MAX_HEIGHT
+    private var polls = 0
     private var failedPolls = 0
-
-    // automatic restarts of the current video after the TV stopped, got stuck or came back
     private var resumes = 0
 
-    // since when the TV says TRANSITIONING after it had played (it may never come out of it)
-    private var transitioningSince = 0L
-    private var polls = 0
-    private var sessionId = 0
-
-    private val queue = ArrayList<CastItem>()
-    private var queueIndex = 0
-
-    // the choices of the user, kept for the next videos of the queue
-    private var wantedHeight: Int? = null
-    private var wantedAudioTrackId: String? = null
-    private var wantedSubtitles: String? = null
+    // the state of the current stream
+    private var duration = -1L
+    private var position = 0L
+    private var startOffset = 0L
+    private var sessionError = ""
+    private var lastTransport: TransportState? = null
 
     // what is being cast
     private var currentChoice: CastChoice? = null
     private var currentSubtitles: SubtitlesStream? = null
-
-    // set for live MPEG-TS sessions, which seek by restarting the stream at another time
-    private var liveMedia: CastMedia? = null
-    private var liveDash: CastDash? = null
-    private var liveFormat: TsFormat? = null
-
-    // the subtitles sent to the TV, as SRT
     private var currentSrt: String? = null
-    private var positionOffset = 0L
+    private var liveStream: CastProxyServer.LiveStream? = null
+    private var liveMedia: CastMedia? = null
 
-    // position to seek to once the TV plays a video which does not start at the beginning
-    private var pendingSeek = 0L
+    // the progressive MP4 path, used only when there are no muxable DASH streams
+    private var progressiveMedia: CastMedia? = null
+    private var pendingSeek = -1L
 
-    // last position seen while playing, saved in the history
-    private var lastPosition = -1L
+    private var wantedSubtitles: String? = null
+    private var sessionId = 0
 
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -216,10 +197,11 @@ class CastService : Service() {
 
             ACTION_SEEK -> {
                 val position = intent.getLongExtra(EXTRA_POSITION, -1)
-                worker.execute { seek(position) }
+                val request = intent.getLongExtra(EXTRA_REQUEST, 0)
+                worker.execute { if (request == seekRequest.get()) seek(position) }
             }
 
-            ACTION_NEXT -> worker.execute { playIndex(queueIndex + 1) }
+            ACTION_NEXT -> worker.execute { playIndex(queue.index + 1) }
 
             ACTION_PLAY_INDEX -> {
                 val index = intent.getIntExtra(EXTRA_INDEX, -1)
@@ -233,7 +215,7 @@ class CastService : Service() {
 
             ACTION_SET_QUALITY -> {
                 val height = intent.getIntExtra(EXTRA_INDEX, 0)
-                worker.execute { setQuality(height.takeIf { it > 0 }) }
+                worker.execute { setQuality(height) }
             }
 
             ACTION_SET_AUDIO_TRACK -> {
@@ -258,7 +240,7 @@ class CastService : Service() {
     }
 
     override fun onDestroy() {
-        worker.execute { endSession(keepState = currentState.error != null && !currentState.active) }
+        worker.execute { endSession(stopTv = false, notify = false, keepState = true) }
         worker.shutdown()
         super.onDestroy()
     }
@@ -268,7 +250,8 @@ class CastService : Service() {
     // /////////////////////////////////////////////////////////////////////////
 
     private fun startSession(device: DlnaDevice, item: CastItem) {
-        endSession(keepState = true)
+        // a new session first stops the old TV, like CastSession::StartSession
+        endSession(stopTv = true, notify = false, keepState = true)
         val session = ++sessionId
         CastLog.d(
             "Starting session #$session on \"${device.friendlyName}\" for \"${item.title}\" " +
@@ -278,24 +261,18 @@ class CastService : Service() {
 
         this.device = device
         client = DlnaClient(device)
-        sinkProtocolInfo = null
-        sinkProtocolInfoLoaded = false
-        queue.clear()
-        queue.add(item)
-        queueIndex = 0
+        queue.reset(item)
+        active = true
+        polls = 0
+        failedPolls = 0
+        resumes = 0
+        duration = -1
+        position = 0
+        sessionError = ""
+        lastTransport = null
 
-        try {
-            val local = LocalNetwork.find() ?: throw IllegalStateException("No local network address")
-            // the separate DASH streams are requested like NewPipe's player does, see YoutubeRange
-            proxy = CastProxyServer(OkHttpUpstream(), local.address, OkHttpUpstream(useRangeParameter = true))
-                .also { it.start() }
-        } catch (e: Exception) {
-            CastLog.e("Could not start the local proxy", e)
-            fail(getString(R.string.cast_error_no_wifi))
-            return
-        }
-
-        if (!playCurrent(startSeconds = null)) {
+        if (!playCurrent(-1, isNewVideo = true)) {
+            fail(sessionError.ifEmpty { getString(R.string.cast_error_cannot_play) })
             return
         }
 
@@ -304,127 +281,500 @@ class CastService : Service() {
             val volume = runCatching { dlna.getVolume() }.getOrDefault(-1)
             publish(currentState.copy(hasVolumeControl = volume >= 0, volume = volume))
         }
-        polling = worker.scheduleWithFixedDelay({ poll(session) }, 1, 1, TimeUnit.SECONDS)
+        polling = worker.scheduleWithFixedDelay({ poll(session) }, POLL_SECONDS, POLL_SECONDS, TimeUnit.SECONDS)
     }
 
     /**
      * Sends the current video of the queue to the TV.
      *
-     * @param startSeconds where to start, null to continue from the position saved in the history
-     * @param isNewVideo false when the same video is sent again with other streams
-     * @return false if the session failed
+     * @param start where to start, -1 to use the item's start or the position saved in history
+     * @return false if the stream could not be prepared or the TV refused it; the session and
+     * the queue are left alive, like CastSession::PlayCurrent
      */
-    private fun playCurrent(startSeconds: Long?, isNewVideo: Boolean = true, isResume: Boolean = false): Boolean {
+    private fun playCurrent(start: Long, isNewVideo: Boolean = false): Boolean {
         val dlna = client ?: return false
-        val server = proxy ?: return false
-        val item = queue.getOrNull(queueIndex) ?: return false
-        if (!isResume) {
-            resumes = 0
-        }
-        transitioningSince = 0
-        hasPlayed = false
-        stoppedPolls = 0
-        failedPolls = 0
-        pendingSeek = 0
-        liveMedia = null
-        liveDash = null
-        liveFormat = null
-        currentSrt = null
-        positionOffset = 0
-
-        val handOff = item.handOffSeconds
-        item.handOffSeconds = null
-        val start = (startSeconds ?: handOff ?: savedPosition(item)).coerceAtLeast(0)
-        lastPosition = start
-        if (isNewVideo) {
-            fallbackNotice = null
-            markAsViewed(item)
-        }
-
-        val choice = item.choose(item.fallbackHeight ?: wantedHeight, wantedAudioTrackId)
-            ?.let { IosStreamUrls.withIosUrls(it, item.info.id) }
-        if (choice == null) {
-            fail(getString(R.string.cast_error_no_stream))
+        if (!queue.hasCurrent()) {
             return false
+        }
+        val item = queue.current()
+        var from = if (start >= 0) {
+            start
+        } else if (item.startSeconds >= 0) {
+            item.startSeconds
+        } else {
+            savedPosition(item)
+        }
+        item.startSeconds = -1
+        resumes = 0
+        sessionError = ""
+        position = from
+        startOffset = from
+        pendingSeek = -1
+        publish(stateForCurrent(item).copy(status = CastStatus.BUFFERING, positionSeconds = from, error = null))
+
+        val audioTrack = item.audioTrackId
+            ?: item.audioTrackForLanguage(item.audioLanguage ?: savedAudioLanguage())
+        val choice = item.choose(maxHeight, audioTrack)?.let { IosStreamUrls.withIosUrls(it, item.info.id) }
+        if (choice == null) {
+            return prepareFailed(item, getString(R.string.cast_error_no_stream))
         }
         currentChoice = choice
-        val media = item.media(choice)
         currentSubtitles = item.findSubtitles(wantedSubtitles)
         currentSrt = currentSubtitles?.let { loadSrt(it) }
-        CastLog.d(
-            "Casting \"${item.title}\" (${queueIndex + 1}/${queue.size}) from ${start}s: " +
-                (choice.single?.let { "${it.height}p MP4" } ?: choice.dash?.let { "${it.video.height}p + ${it.audio.codecs} muxed" }) +
-                (currentSubtitles?.let { ", subtitles ${it.languageTag}" } ?: "")
-        )
-        publish(stateForCurrent(item).copy(status = CastStatus.CONNECTING, positionSeconds = start, error = null))
 
-        val castMedia = prepareMedia(media, dlna, server, start)
-        try {
-            sendToTv(dlna, castMedia)
-        } catch (e: UpnpException) {
-            val error = "${e.errorCode} ${e.errorDescription}"
-            // still busy after the retries: the TV is usually off, or showing another app
-            fail(
-                when {
-                    e.errorCode == ERROR_TRANSITION_NOT_AVAILABLE -> getString(R.string.cast_error_tv_busy)
-                    media.dash != null -> getString(R.string.cast_error_live_refused, error)
-                    else -> getString(R.string.cast_error_tv, error)
-                }
-            )
-            return false
-        } catch (e: Exception) {
-            CastLog.e("Could not start playback", e)
-            fail(getString(R.string.cast_error_unreachable))
-            return false
+        // tvlab: a new address while the TV still holds a /v.ts of the old server wedges it
+        // (701 forever). First the old server and all its connections, then Stop, then the new
+        // address; this is not done for the very first start, which has no old server.
+        val oldProxy = proxy
+        if (oldProxy != null) {
+            oldProxy.stop()
+            runCatching { dlna.stop() }
         }
-        playRequestedAt = System.currentTimeMillis()
-        lastLoggedTransport = null
-        publish(currentState.copy(status = CastStatus.BUFFERING))
-        return true
+        proxy = null
+        liveStream = null
+        liveMedia = null
+        progressiveMedia = null
+
+        try {
+            val local = LocalNetwork.find() ?: throw IllegalStateException("No local network address")
+            val server = CastProxyServer(OkHttpUpstream(), local.address, OkHttpUpstream(useRangeParameter = true))
+            server.start()
+            proxy = server
+
+            val dash = choice.dash
+            if (dash != null) {
+                val live = server.startLive(dash, currentSrt?.toByteArray(Charsets.UTF_8))
+                liveStream = live
+                duration = live.durationSeconds
+                item.durationSeconds = if (duration > 0) duration else -1
+                if (duration > 0 && from >= duration - END_MARGIN_SECONDS) {
+                    from = 0
+                }
+                liveMedia = CastMedia(
+                    url = "",
+                    title = item.title,
+                    uploader = item.uploader,
+                    mimeType = LIVE_MIME_TYPE,
+                    durationSeconds = item.durationSeconds
+                )
+            } else {
+                val single = choice.single ?: return prepareFailed(item, getString(R.string.cast_error_no_stream))
+                duration = item.durationSeconds
+                val subtitleUrl = currentSrt?.let { registerSrt(it, 0, server) }
+                val direct = PreferenceManager.getDefaultSharedPreferences(this)
+                    .getBoolean(getString(R.string.cast_direct_link_key), false)
+                val url = if (direct && subtitleUrl == null) {
+                    CastLog.d("Sending the direct link to the TV (proxy disabled in the settings)")
+                    single.url
+                } else {
+                    server.register(single.url, CastStreamSelector.MP4_MIME_TYPE, subtitleUrl)
+                }
+                progressiveMedia = CastMedia(
+                    url = url,
+                    title = item.title,
+                    uploader = item.uploader,
+                    mimeType = CastStreamSelector.MP4_MIME_TYPE,
+                    durationSeconds = item.durationSeconds,
+                    subtitleUrl = subtitleUrl
+                )
+            }
+        } catch (e: Exception) {
+            return prepareFailed(item, e.message ?: getString(R.string.cast_error_no_wifi))
+        }
+
+        val started = startAt(from)
+        CastLog.d(
+            "play \"${item.title}\" from ${from}s of ${duration}s, ${currentChoice?.height ?: 0}p" +
+                if (started) "" else ", FAILED: $sessionError"
+        )
+        publish(
+            stateForCurrent(item).copy(
+                status = if (started) CastStatus.BUFFERING else CastStatus.ERROR,
+                positionSeconds = from,
+                error = sessionError.takeIf { it.isNotEmpty() }
+            )
+        )
+        if (started && isNewVideo) {
+            markAsViewed(item)
+        }
+        return started
+    }
+
+    private fun prepareFailed(item: CastItem, error: String): Boolean {
+        sessionError = error
+        CastLog.e("prepare failed for \"${item.title}\": $error")
+        publish(stateForCurrent(item).copy(status = CastStatus.ERROR, error = error))
+        return false
     }
 
     /**
-     * Some TVs refuse a new URI while they are playing something else, or accept it and then
-     * never start it: stop the TV and wait until it says it stopped.
+     * The stream cannot seek by bytes: a new /v.ts starting at the wanted second replaces the
+     * current one.
      */
-    private fun stopIfBusy(dlna: DlnaClient) {
-        val state = runCatching { dlna.getTransportInfo() }.getOrNull()
-        if (state != TransportState.PLAYING && state != TransportState.PAUSED && state != TransportState.TRANSITIONING) {
+    private fun startAt(seconds: Long): Boolean {
+        var from = seconds
+        if (duration > 0 && from >= duration) {
+            from = (duration - 5).coerceAtLeast(0)
+        }
+        startOffset = from
+        position = from
+        val live = liveStream
+        val media = if (live != null) {
+            val previous = liveMedia ?: return false
+            previous.copy(
+                url = "${live.url}?start=$from",
+                subtitleUrl = live.subtitleUrl?.let { "$it?start=$from" }
+            )
+        } else {
+            progressiveMedia ?: return false
+        }
+        if (live == null) {
+            pendingSeek = if (from > 0) from else -1
+        }
+
+        val dlna = client ?: return false
+        var started = false
+        try {
+            setUriWithRetries(dlna, media)
+            playWithRetries(dlna)
+            // the progressive MP4 path can seek by time; the live MPEG-TS stream gets a new
+            // address instead, like CastSession::StartAt
+            if (live == null && pendingSeek > 0) {
+                dlna.seek(pendingSeek)
+            }
+            started = true
+        } catch (e: UpnpException) {
+            sessionError = "${e.errorCode} ${e.errorDescription}"
+        } catch (e: Exception) {
+            sessionError = e.message ?: getString(R.string.cast_error_unreachable)
+        }
+        // CastSession::StartAt records the start even when the TV refused it
+        queue.started(from)
+        return started
+    }
+
+    private fun currentPosition(): Long = queue.lastPosition().takeIf { it >= 0 } ?: position
+
+    /** Downloads the subtitles and converts them to SRT. */
+    private fun loadSrt(subtitles: SubtitlesStream): String? {
+        return try {
+            val text = DownloaderImpl.getInstance().get(subtitles.content).responseBody()
+            SrtConverter.convert(text, CastItem.suffixOf(subtitles).orEmpty())
+                ?: throw IllegalArgumentException(
+                    "Unsupported subtitle format ${CastItem.suffixOf(subtitles)}"
+                )
+        } catch (e: Exception) {
+            CastLog.e("Could not load the subtitles", e)
+            null
+        }
+    }
+
+    /** Makes [srt] available to the progressive MP4 path, moved back to [startSeconds]. */
+    private fun registerSrt(srt: String, startSeconds: Long, server: CastProxyServer): String {
+        val shifted = if (startSeconds > 0) {
+            SrtConverter.shift(srt, startSeconds * 1000)
+        } else {
+            srt
+        }
+        return server.registerContent(
+            shifted.toByteArray(Charsets.UTF_8),
+            DidlLite.SRT_MIME_TYPE,
+            "srt"
+        ).also { CastLog.d("Subtitles for the TV: $it") }
+    }
+
+    private fun saveProgress() {
+        if (!queue.hasCurrent() || !queue.hasPlayed()) {
             return
         }
-        val started = System.currentTimeMillis()
-        runCatching { dlna.stop() }
-        var now = state
-        repeat(STOP_WAIT_POLLS) {
-            now = runCatching { dlna.getTransportInfo() }.getOrNull()
-            if (now == TransportState.STOPPED || now == TransportState.NO_MEDIA) {
-                CastLog.d("The TV stopped ($state -> $now) in ${System.currentTimeMillis() - started} ms")
-                return
-            }
-            Thread.sleep(STOP_WAIT_MILLIS)
+        savePosition(queue.current(), currentPosition())
+    }
+
+    private fun savePosition(item: CastItem, seconds: Long) {
+        if (seconds < 0 || !isWatchHistoryEnabled()) {
+            return
         }
-        CastLog.w("The TV is still $now ${System.currentTimeMillis() - started} ms after Stop")
+        try {
+            history.saveStreamState(item.info, seconds * 1000).blockingAwait()
+        } catch (e: Exception) {
+            CastLog.w("Could not save the position: ${e.message}")
+        }
+    }
+
+    private fun endSession(stopTv: Boolean, notify: Boolean, keepState: Boolean = false) {
+        val wasActive = active
+        if (wasActive) {
+            saveProgress()
+        }
+        active = false
+        if (stopTv) {
+            client?.let { runCatching { it.stop() } }
+        }
+        polling?.cancel(false)
+        polling = null
+        proxy?.stop()
+        proxy = null
+        client = null
+        device = null
+        liveStream = null
+        liveMedia = null
+        progressiveMedia = null
+        currentChoice = null
+        currentSubtitles = null
+        currentSrt = null
+        lastTransport = null
+        releaseLocks()
+        if (notify && wasActive) {
+            publish(CastState(active = false))
+        } else if (!keepState) {
+            publish(CastState(active = false))
+        }
+    }
+
+    private fun enqueue(item: CastItem, playNow: Boolean) {
+        if (!active) {
+            return
+        }
+        if (playNow) {
+            saveProgress()
+            if (queue.playNow(item) == QueueAction.PLAY_CURRENT) {
+                playCurrent(-1, isNewVideo = true)
+            }
+        } else {
+            queue.add(item)
+            CastLog.d("Added \"${item.title}\" to the queue (${queue.items().size} videos)")
+            publish(currentState.copy(queue = queueEntries()))
+        }
+    }
+
+    private fun playIndex(index: Int) {
+        if (!active) {
+            return
+        }
+        saveProgress()
+        if (queue.playIndex(index) == QueueAction.PLAY_CURRENT) {
+            playCurrent(-1, isNewVideo = true)
+        }
+    }
+
+    private fun next() {
+        if (!active) {
+            return
+        }
+        saveProgress()
+        if (queue.next() == QueueAction.PLAY_CURRENT) {
+            playCurrent(-1, isNewVideo = true)
+        }
+    }
+
+    private fun remove(index: Int) {
+        if (queue.remove(index)) {
+            publish(currentState.copy(queue = queueEntries(), queueIndex = queue.index))
+        }
+    }
+
+    private fun setAudioTrack(index: Int) {
+        if (!active || !queue.hasCurrent()) {
+            return
+        }
+        val item = queue.current()
+        val trackId = item.audioTrackIds.getOrNull(index) ?: return
+        item.audioTrackId = trackId
+        item.audioLanguage = item.audioLanguageOf(trackId)
+        saveAudioLanguage(item.audioLanguage)
+        playCurrent(currentPosition(), isNewVideo = false)
+    }
+
+    private fun setSubtitles(index: Int) {
+        if (!active || !queue.hasCurrent()) {
+            return
+        }
+        val item = queue.current()
+        wantedSubtitles = item.subtitles.getOrNull(index)?.let { CastItem.subtitleKey(it) }
+        playCurrent(currentPosition(), isNewVideo = false)
+    }
+
+    private fun setQuality(height: Int) {
+        if (!active || height <= 0) {
+            return
+        }
+        maxHeight = height
+        playCurrent(currentPosition(), isNewVideo = false)
+    }
+
+    private fun seek(seconds: Long) {
+        if (!active || seconds < 0) {
+            return
+        }
+        // fresh playlists like the phone player's reopen: the segment URLs read at the start
+        // expire (HTTP 403), so a seek sends the video again from there
+        playCurrent(seconds, isNewVideo = false)
+    }
+
+    private fun playPause() {
+        val dlna = client ?: return
+        if (!active) {
+            return
+        }
+        try {
+            if (lastTransport == TransportState.PLAYING) {
+                dlna.pause()
+                lastTransport = TransportState.PAUSED
+                publish(currentState.copy(status = CastStatus.PAUSED, error = null))
+            } else {
+                dlna.play()
+                lastTransport = TransportState.TRANSITIONING
+                publish(currentState.copy(status = CastStatus.BUFFERING, error = null))
+            }
+        } catch (e: Exception) {
+            showCommandError(e)
+        }
+    }
+
+    private fun changeVolume(delta: Int) {
+        val dlna = client ?: return
+        if (!active || !dlna.hasVolumeControl) {
+            return
+        }
+        try {
+            val current = currentState.volume.takeIf { it >= 0 } ?: dlna.getVolume()
+            dlna.setVolume((current + delta).coerceIn(0, MAX_VOLUME))
+        } catch (e: Exception) {
+            showCommandError(e)
+        }
+    }
+
+    private fun showCommandError(e: Exception) {
+        val message = if (e is UpnpException) {
+            getString(R.string.cast_error_tv, "${e.errorCode} ${e.errorDescription}")
+        } else {
+            getString(R.string.cast_error_unreachable)
+        }
+        publish(currentState.copy(error = message))
+    }
+
+    private fun poll(session: Int) {
+        if (session != sessionId) {
+            return
+        }
+        val dlna = client ?: return
+        if (!active) {
+            return
+        }
+
+        val transport: TransportState
+        val positionInfo: PositionInfo
+        try {
+            transport = dlna.getTransportInfo()
+            positionInfo = dlna.getPositionInfo()
+        } catch (e: Exception) {
+            // turned off, another input, Wi-Fi gone: keep the session and wait for it to come back
+            failedPolls++
+            if (failedPolls >= FAILED_POLLS_BEFORE_ERROR) {
+                CastLog.w("The TV does not answer: ${e.message}")
+                publish(currentState.copy(error = getString(R.string.cast_error_unreachable)))
+            }
+            return
+        }
+        failedPolls = 0
+        if (transport != lastTransport) {
+            CastLog.d("TV state: $transport, position ${positionInfo.positionSeconds}s")
+        }
+        lastTransport = transport
+
+        val tvPosition = if (positionInfo.positionSeconds >= 0) {
+            startOffset + positionInfo.positionSeconds
+        } else {
+            -1
+        }
+        if (tvPosition >= 0 &&
+            (transport == TransportState.PLAYING || transport == TransportState.PAUSED)
+        ) {
+            position = tvPosition
+        }
+
+        val action = queue.onPoll(tvStatus(transport), tvPosition)
+        polls++
+        if (polls % SAVE_EVERY_POLLS == 0 && transport == TransportState.PLAYING) {
+            saveProgress()
+        }
+        if (polls % SAVE_EVERY_POLLS == 0) {
+            CastLog.d(
+                "tv ${CastControllerStatus.text(transport)} at $tvPosition/$duration s, " +
+                    "queue ${queue.index + 1}/${queue.items().size}"
+            )
+        }
+
+        when (action) {
+            QueueAction.PLAY_CURRENT -> {
+                // the previous video ended: watched to the end, it starts again from the beginning
+                val previous = queue.index - 1
+                queue.items().getOrNull(previous)?.let { savePosition(it, 0) }
+                playCurrent(-1, isNewVideo = true)
+            }
+
+            QueueAction.ENDED -> {
+                if (duration > 0 && currentPosition() < duration - END_MARGIN_SECONDS && resumes < MAX_RESUMES) {
+                    // the TV stopped in the middle (lost stream, its own hiccup): continue from there
+                    resumes++
+                    CastLog.w(
+                        "The TV stopped at ${currentPosition()}s, resuming ($resumes/$MAX_RESUMES)"
+                    )
+                    publish(
+                        currentState.copy(
+                            status = CastStatus.BUFFERING,
+                            error = getString(R.string.cast_resuming)
+                        )
+                    )
+                    if (!startAt(currentPosition())) {
+                        // the next poll publishes the error, like CastSession::Poll
+                        publish(currentState.copy(error = sessionError.takeIf { it.isNotEmpty() }))
+                    }
+                } else {
+                    CastLog.d("The TV stopped at ${currentPosition()}/$duration s: session ends")
+                    if (queue.hasCurrent() && duration > 0 &&
+                        currentPosition() >= duration - END_MARGIN_SECONDS
+                    ) {
+                        savePosition(queue.current(), 0)
+                    } else {
+                        saveProgress()
+                    }
+                    endSession(stopTv = false, notify = true, keepState = false)
+                    stopForegroundAndSelf()
+                }
+            }
+
+            QueueAction.NONE -> publish(
+                currentState.copy(
+                    status = statusOf(transport),
+                    positionSeconds = position,
+                    durationSeconds = duration,
+                    error = sessionError.takeIf { it.isNotEmpty() }
+                )
+            )
+        }
+    }
+
+    private fun tvStatus(transport: TransportState): TvStatus = when (transport) {
+        TransportState.PLAYING -> TvStatus.PLAYING
+        TransportState.PAUSED -> TvStatus.PAUSED
+        TransportState.TRANSITIONING -> TvStatus.TRANSITIONING
+        TransportState.STOPPED, TransportState.NO_MEDIA -> TvStatus.STOPPED
+        else -> TvStatus.OTHER
+    }
+
+    private fun statusOf(transport: TransportState): CastStatus = when (transport) {
+        TransportState.PLAYING -> CastStatus.PLAYING
+        TransportState.PAUSED -> CastStatus.PAUSED
+        TransportState.TRANSITIONING -> CastStatus.BUFFERING
+        TransportState.STOPPED, TransportState.NO_MEDIA -> CastStatus.STOPPED
+        else -> currentState.status
     }
 
     /**
-     * A new address for the TV, the way that never wedged the Samsung of the Lumia app's tests
-     * (tools/tvlab in dumbphone, 6/6 from a wedged TV): the TV's connections to the proxy are
-     * closed first, then Stop, then the address again and again while the TV answers 701
-     * ("Transition not available": it is still finishing the previous one; retrying only Play
-     * would play the OLD address), then Play again and again (701 for ~2 s while it opens the
-     * stream).
+     * Some TVs refuse a new URI while they are playing something else. The Lumia app does not
+     * ask or wait: it sends Stop before every new address and retries the address on 701.
      */
-    private fun sendToTv(dlna: DlnaClient, media: CastMedia) {
-        proxy?.closeClients()
-        stopIfBusy(dlna)
-        val uriTries = setUriWithRetries(dlna, media)
-        val playTries = playWithRetries(dlna)
-        if (uriTries > 1 || playTries > 1) {
-            CastLog.d("The TV took the address after $uriTries tries, Play after $playTries")
-        }
-    }
-
-    /** @return how many times the address was sent */
     private fun setUriWithRetries(dlna: DlnaClient, media: CastMedia): Int {
         var attempt = 0
         while (true) {
@@ -440,110 +790,6 @@ class CastService : Service() {
         }
     }
 
-    /**
-     * The TV did not start the video: it often cannot decode some streams (e.g. high H.264
-     * levels), so the video is sent again at the next lower resolution.
-     *
-     * @return false if there is no lower resolution
-     */
-    private fun tryLowerQuality(reason: String): Boolean {
-        val item = queue.getOrNull(queueIndex) ?: return false
-        val current = currentChoice?.height ?: return false
-        val lower = item.qualities.filter { it < current }.maxOrNull() ?: return false
-        CastLog.w("The TV did not play ${current}p ($reason), trying ${lower}p")
-        item.fallbackHeight = lower
-        val start = lastPosition.coerceAtLeast(0)
-        if (playCurrent(startSeconds = start, isNewVideo = false)) {
-            fallbackNotice = getString(R.string.cast_quality_fallback, "${current}p", "${lower}p")
-            publish(currentState.copy(error = fallbackNotice))
-        }
-        return true
-    }
-
-    /**
-     * @return what to give to the TV: the URL through the local proxy, or the direct link if the
-     * user chose so in the settings. Separate video and audio streams always go through the
-     * proxy, which muxes them into MPEG-TS.
-     */
-    private fun prepareMedia(
-        media: CastMedia,
-        dlna: DlnaClient,
-        server: CastProxyServer,
-        startSeconds: Long
-    ): CastMedia {
-        val dash = media.dash
-        if (dash != null) {
-            val format = TsFormat.choose(sinkProtocolInfo(dlna))
-            liveDash = dash
-            liveFormat = format
-            liveMedia = media.copy(mimeType = format.mimeType, dlnaFeatures = format.dlnaFeatures)
-            return liveMediaAt(startSeconds, server)
-        }
-
-        pendingSeek = startSeconds
-        val subtitleUrl = currentSrt?.let { registerSrt(it, 0, server) }
-        val directLink = PreferenceManager.getDefaultSharedPreferences(this)
-            .getBoolean(getString(R.string.cast_direct_link_key), false)
-        if (directLink && subtitleUrl == null) {
-            CastLog.d("Sending the direct link to the TV (proxy disabled in the settings)")
-            return media
-        }
-        val url = server.register(media.url, media.mimeType, subtitleUrl)
-        CastLog.d("Proxy URL for the TV: $url")
-        return media.copy(url = url, subtitleUrl = subtitleUrl)
-    }
-
-    private fun sinkProtocolInfo(dlna: DlnaClient): String? {
-        if (!sinkProtocolInfoLoaded) {
-            sinkProtocolInfoLoaded = true
-            sinkProtocolInfo = try {
-                dlna.getSinkProtocolInfo()
-            } catch (e: Exception) {
-                CastLog.w("Could not read the formats supported by the TV: ${e.message}")
-                null
-            }
-            // only the MIME types, with how many profiles each: the whole list is very long
-            val formats = TsFormat.parse(sinkProtocolInfo).groupBy({ it.first }, { it.second })
-            CastLog.d(
-                "Video formats declared by the TV: " +
-                    formats.entries.joinToString { (mime, profiles) -> "$mime (${profiles.count { it != null }} profiles)" }
-            )
-        }
-        return sinkProtocolInfo
-    }
-
-    /**
-     * @return the live MPEG-TS stream starting at [startSeconds]. Its timestamps start at 0, so
-     * the subtitles are shifted to match.
-     */
-    private fun liveMediaAt(startSeconds: Long, server: CastProxyServer): CastMedia {
-        val live = liveMedia!!
-        val subtitleUrl = currentSrt?.let { registerSrt(it, startSeconds, server) }
-        val url = server.registerMux(liveDash!!, liveFormat!!, subtitleUrl)
-        CastLog.d("Live MPEG-TS URL for the TV (${live.mimeType}, ${liveFormat?.profile ?: "no profile"}): $url")
-        positionOffset = startSeconds
-        return live.copy(url = if (startSeconds > 0) "$url?t=$startSeconds" else url, subtitleUrl = subtitleUrl)
-    }
-
-    /** Downloads the subtitles and converts them to SRT. */
-    private fun loadSrt(subtitles: SubtitlesStream): String? {
-        return try {
-            val text = DownloaderImpl.getInstance().get(subtitles.content).responseBody()
-            SrtConverter.convert(text, CastItem.suffixOf(subtitles).orEmpty())
-                ?: throw IllegalArgumentException("Unsupported subtitle format ${CastItem.suffixOf(subtitles)}")
-        } catch (e: Exception) {
-            CastLog.e("Could not load the subtitles", e)
-            null
-        }
-    }
-
-    /** Serves the subtitles to the TV, starting at [startSeconds]. */
-    private fun registerSrt(srt: String, startSeconds: Long, server: CastProxyServer): String {
-        val shifted = if (startSeconds > 0) SrtConverter.shift(srt, startSeconds * 1000) else srt
-        return server.registerContent(shifted.toByteArray(Charsets.UTF_8), DidlLite.SRT_MIME_TYPE, "srt")
-            .also { CastLog.d("Subtitles for the TV: $it") }
-    }
-
     /** Right after SetAVTransportURI some TVs answer Play with 701 until they are ready. */
     private fun playWithRetries(dlna: DlnaClient): Int {
         var attempt = 0
@@ -555,364 +801,48 @@ class CastService : Service() {
                 if (e.errorCode != ERROR_TRANSITION_NOT_AVAILABLE || ++attempt >= PLAY_ATTEMPTS) {
                     throw e
                 }
-                CastLog.d("Play not possible yet, retrying in 1 second")
                 Thread.sleep(1000)
             }
         }
     }
 
-    private fun poll(session: Int) {
-        val dlna = client ?: return
-        if (session != sessionId) {
-            return
-        }
-        try {
-            val transport = dlna.getTransportInfo()
-            val position = dlna.getPositionInfo()
-            if (failedPolls >= FAILED_POLLS_BEFORE_ERROR) {
-                // the TV is back (turned on again, back from another input): a fresh round of resumes
-                CastLog.d("The TV answers again after $failedPolls failed polls ($transport)")
-                resumes = 0
-                publish(currentState.copy(error = fallbackNotice))
-            }
-            failedPolls = 0
-
-            val status = when (transport) {
-                TransportState.PLAYING -> CastStatus.PLAYING
-                TransportState.PAUSED -> CastStatus.PAUSED
-                TransportState.TRANSITIONING -> CastStatus.BUFFERING
-                TransportState.STOPPED, TransportState.NO_MEDIA -> CastStatus.STOPPED
-                TransportState.UNKNOWN -> currentState.status
-            }
-            if (transport != lastLoggedTransport) {
-                CastLog.d("TV state: $transport, position ${position.positionSeconds}s")
-                lastLoggedTransport = transport
-            }
-            if (status == CastStatus.PLAYING || status == CastStatus.PAUSED) {
-                hasPlayed = true
-            }
-
-            if (!hasPlayed) {
-                val waited = System.currentTimeMillis() - playRequestedAt
-                stoppedPolls = if (status == CastStatus.STOPPED && waited > STOPPED_GRACE_MILLIS) stoppedPolls + 1 else 0
-                val reason = when {
-                    stoppedPolls >= STOPPED_POLLS_BEFORE_END -> "it stopped"
-                    waited > START_TIMEOUT_MILLIS -> "nothing after ${waited / 1000}s"
-                    else -> null
-                }
-                if (reason != null) {
-                    stoppedPolls = 0
-                    if (!tryLowerQuality(reason)) {
-                        fail(getString(R.string.cast_error_cannot_play))
-                    }
-                    return
-                }
-            }
-
-            if (status == CastStatus.PLAYING && pendingSeek > 0) {
-                // TVs ignore seeks before they play, so the saved position is reached now
-                val target = pendingSeek
-                pendingSeek = 0
-                CastLog.d("Continuing from ${target}s")
-                runCatching { dlna.seek(target) }.onFailure { CastLog.w("Could not seek to ${target}s: ${it.message}") }
-                publish(currentState.copy(positionSeconds = target))
-                return
-            }
-
-            val positionSeconds = position.positionSeconds.takeIf { it >= 0 }?.plus(positionOffset) ?: -1L
-            if ((status == CastStatus.PLAYING || status == CastStatus.PAUSED) && positionSeconds >= 0 && pendingSeek == 0L) {
-                lastPosition = positionSeconds
-            }
-            publish(
-                currentState.copy(
-                    status = if (!hasPlayed && status == CastStatus.STOPPED) CastStatus.BUFFERING else status,
-                    positionSeconds = if (pendingSeek > 0) currentState.positionSeconds else positionSeconds,
-                    durationSeconds = if (liveMedia != null) {
-                        currentState.durationSeconds
-                    } else {
-                        position.durationSeconds.takeIf { it > 0 } ?: currentState.durationSeconds
-                    },
-                    error = fallbackNotice
-                )
-            )
-
-            if (++polls % SAVE_EVERY_POLLS == 0 && status == CastStatus.PLAYING) {
-                saveProgress()
-            }
-
-            // the video ended, or the TV was used for something else
-            if (hasPlayed) {
-                stoppedPolls = if (status == CastStatus.STOPPED) stoppedPolls + 1 else 0
-            }
-            if (hasPlayed && stoppedPolls >= STOPPED_POLLS_BEFORE_END) {
-                onTvStopped()
-                return
-            }
-            // after it played, a TV can stay TRANSITIONING for good (its stream stalled): restart it
-            if (hasPlayed && transport == TransportState.TRANSITIONING) {
-                val now = System.currentTimeMillis()
-                if (transitioningSince == 0L) {
-                    transitioningSince = now
-                } else if (now - transitioningSince > STUCK_MILLIS) {
-                    transitioningSince = 0
-                    resume("stuck in TRANSITIONING for ${STUCK_MILLIS / 1000}s")
-                }
-            } else {
-                transitioningSince = 0
-            }
-        } catch (e: Exception) {
-            // turned off, another input, Wi-Fi gone: keep the session and wait for it to come back
-            failedPolls++
-            if (failedPolls == FAILED_POLLS_BEFORE_ERROR) {
-                CastLog.w("The TV does not answer: ${e.message}")
-                publish(currentState.copy(error = getString(R.string.cast_error_unreachable_waiting)))
-            }
-            if (failedPolls >= FAILED_POLLS_BEFORE_END) {
-                fail(getString(R.string.cast_error_unreachable))
-            }
-        }
-    }
-
-    /**
-     * The current video again from the last position seen, with fresh streams (the old URLs may
-     * have expired). At most [MAX_RESUMES] times in a row, so a video the TV keeps dropping ends.
-     *
-     * @return false if no resume is left
-     */
-    private fun resume(reason: String): Boolean {
-        if (resumes >= MAX_RESUMES) {
-            return false
-        }
-        resumes++
-        val position = lastPosition.coerceAtLeast(0)
-        CastLog.w("The TV $reason at ${position}s: resuming ($resumes/$MAX_RESUMES)")
-        publish(currentState.copy(status = CastStatus.BUFFERING, error = getString(R.string.cast_resuming)))
-        saveProgress()
-        playCurrent(startSeconds = position, isNewVideo = false, isResume = true)
-        return true
-    }
-
-    /** The TV stopped by itself: at the end of the video the queue continues. */
-    private fun onTvStopped() {
-        val item = queue.getOrNull(queueIndex)
-        val duration = currentState.durationSeconds.takeIf { it > 0 } ?: item?.durationSeconds ?: -1L
-        val ended = duration <= 0 || lastPosition >= duration - END_MARGIN_SECONDS
-        if (ended && item != null && duration > 0) {
-            lastPosition = duration
-        }
-        if (!ended && resume("stopped by itself")) {
-            return
-        }
-        if (ended && queueIndex + 1 < queue.size) {
-            CastLog.d("The video ended, playing the next one of the queue")
-            saveProgress()
-            queueIndex++
-            playCurrent(startSeconds = null)
-            return
-        }
-        CastLog.d("The TV stopped playing, ending the session")
-        stopSession(stopTv = false)
-    }
-
-    private fun enqueue(item: CastItem, playNow: Boolean) {
-        if (client == null) {
-            return
-        }
-        if (playNow) {
-            saveProgress()
-            queue.add(queueIndex + 1, item)
-            queueIndex++
-            playCurrent(startSeconds = null)
-        } else {
-            queue.add(item)
-            CastLog.d("Added \"${item.title}\" to the queue (${queue.size} videos)")
-            publish(currentState.copy(queue = queueEntries()))
-        }
-    }
-
-    private fun playIndex(index: Int) {
-        if (client == null || index !in queue.indices || index == queueIndex) {
-            return
-        }
-        saveProgress()
-        queueIndex = index
-        playCurrent(startSeconds = null)
-    }
-
-    private fun remove(index: Int) {
-        if (index !in queue.indices || index == queueIndex) {
-            return
-        }
-        queue.removeAt(index)
-        if (index < queueIndex) {
-            queueIndex--
-        }
-        publish(currentState.copy(queue = queueEntries(), queueIndex = queueIndex))
-    }
-
-    private fun setQuality(height: Int?) {
-        if (client == null) {
-            return
-        }
-        wantedHeight = height
-        queue.getOrNull(queueIndex)?.fallbackHeight = null
-        fallbackNotice = null
-        restartCurrent()
-    }
-
-    private fun setAudioTrack(index: Int) {
-        val item = queue.getOrNull(queueIndex) ?: return
-        val trackId = item.audioTrackIds.getOrNull(index) ?: return
-        // the first track is the original one, which the progressive MP4 streams have too
-        wantedAudioTrackId = if (index == 0) null else trackId
-        restartCurrent()
-    }
-
-    private fun setSubtitles(index: Int) {
-        val item = queue.getOrNull(queueIndex) ?: return
-        wantedSubtitles = item.subtitles.getOrNull(index)?.let { CastItem.subtitleKey(it) }
-        restartCurrent()
-    }
-
-    /** Sends the current video again with the new choices, from the same position. */
-    private fun restartCurrent() {
-        if (client == null) {
-            return
-        }
-        val position = lastPosition.coerceAtLeast(0)
-        saveProgress()
-        playCurrent(startSeconds = position, isNewVideo = false)
-    }
-
-    private fun playPause() {
-        val dlna = client ?: return
-        try {
-            if (currentState.status == CastStatus.PLAYING) {
-                dlna.pause()
-                publish(currentState.copy(status = CastStatus.PAUSED))
-                saveProgress()
-            } else {
-                dlna.play()
-                publish(currentState.copy(status = CastStatus.PLAYING))
-            }
-        } catch (e: Exception) {
-            showCommandError(e)
-        }
-    }
-
-    private fun seek(positionSeconds: Long) {
-        val dlna = client ?: return
-        if (positionSeconds < 0) {
-            return
-        }
-        pendingSeek = 0
-        val server = proxy ?: return
-        if (liveMedia != null) {
-            // a live stream cannot be seeked: the TV gets a new one starting at that time
-            try {
-                sendToTv(dlna, liveMediaAt(positionSeconds, server))
-                playRequestedAt = System.currentTimeMillis()
-                lastPosition = positionSeconds
-                hasPlayed = false
-                stoppedPolls = 0
-                publish(currentState.copy(positionSeconds = positionSeconds, status = CastStatus.BUFFERING))
-            } catch (e: Exception) {
-                showCommandError(e)
-            }
-            return
-        }
-        try {
-            dlna.seek(positionSeconds)
-            lastPosition = positionSeconds
-            publish(currentState.copy(positionSeconds = positionSeconds))
-        } catch (e: Exception) {
-            // a TV that refuses the seek (busy, wedged) gets the video again from there
-            CastLog.w("Seek to ${positionSeconds}s refused (${e.message}), sending the video again from there")
-            playCurrent(startSeconds = positionSeconds, isNewVideo = false)
-        }
-    }
-
-    private fun changeVolume(delta: Int) {
-        val dlna = client ?: return
-        if (!dlna.hasVolumeControl) {
-            return
-        }
-        try {
-            val current = currentState.volume.takeIf { it >= 0 } ?: dlna.getVolume()
-            val volume = (current + delta).coerceIn(0, MAX_VOLUME)
-            dlna.setVolume(volume)
-            publish(currentState.copy(volume = volume, hasVolumeControl = true))
-        } catch (e: Exception) {
-            showCommandError(e)
-        }
-    }
-
-    private fun showCommandError(e: Exception) {
-        val message = if (e is UpnpException) {
-            getString(R.string.cast_error_tv, "${e.errorCode} ${e.errorDescription}")
-        } else {
-            getString(R.string.cast_error_unreachable)
-        }
-        publish(currentState.copy(error = message))
-    }
-
     private fun fail(message: String) {
         CastLog.e("Session failed: $message")
-        endSession(keepState = true)
+        endSession(stopTv = false, notify = false, keepState = true)
         // not active anymore: the controller shows the error and disables the buttons
         publish(currentState.copy(active = false, status = CastStatus.ERROR, error = message))
         stopForegroundAndSelf()
     }
 
     private fun stopSession(stopTv: Boolean) {
-        if (stopTv) {
-            client?.let { runCatching { it.stop() } }
-        }
-        endSession()
+        endSession(stopTv = stopTv, notify = true, keepState = false)
         stopForegroundAndSelf()
-    }
-
-    /** Releases everything; [keepState] keeps the state visible, e.g. to show an error. */
-    private fun endSession(keepState: Boolean = false) {
-        if (client != null) {
-            saveProgress()
-        }
-        polling?.cancel(false)
-        polling = null
-        client = null
-        device = null
-        proxy?.stop()
-        proxy = null
-        queue.clear()
-        queueIndex = 0
-        releaseLocks()
-        if (!keepState) {
-            publish(CastState(active = false))
-        }
     }
 
     // /////////////////////////////////////////////////////////////////////////
     // Queue and history
     // /////////////////////////////////////////////////////////////////////////
 
-    private fun queueEntries() = queue.map { CastQueueEntry(it.title, it.uploader, it.durationSeconds) }
+    private fun queueEntries() = queue.items().map { CastQueueEntry(it.title, it.uploader, it.durationSeconds) }
 
     /** @return the state showing the current video of the queue and what can be chosen for it */
     private fun stateForCurrent(item: CastItem): CastState {
         val choice = currentChoice
-        val audioTrackId = choice?.dash?.let { wantedAudioTrackId } ?: item.audioTrackIds.firstOrNull()
+        val audioTrackId = item.audioTrackId
+            ?: item.audioTrackForLanguage(item.audioLanguage ?: savedAudioLanguage())
+            ?: item.audioTrackIds.firstOrNull()
         return currentState.copy(
             active = true,
             deviceName = device?.friendlyName.orEmpty(),
-            url = item.info.url.orEmpty(),
+            url = item.videoUrl,
             title = item.title,
             uploader = item.uploader,
-            durationSeconds = item.durationSeconds,
+            durationSeconds = if (duration > 0) duration else item.durationSeconds,
+            positionSeconds = position,
             queue = queueEntries(),
-            queueIndex = queueIndex,
+            queueIndex = queue.index,
             qualities = item.qualities,
             quality = choice?.height ?: 0,
-            autoQuality = wantedHeight == null,
             audioTracks = item.audioTrackIds.map { item.audioTrackName(this, it) },
             audioTrack = item.audioTrackIds.indexOf(audioTrackId).coerceAtLeast(0),
             subtitles = item.subtitles.map { item.subtitleName(this, it) },
@@ -937,18 +867,16 @@ class CastService : Service() {
         }
     }
 
-    /** Saves the position reached on the TV, like the local player does. */
-    private fun saveProgress() {
-        val item = queue.getOrNull(queueIndex) ?: return
-        val position = lastPosition
-        if (position <= 0 || !hasPlayed || !isWatchHistoryEnabled()) {
+    private fun savedAudioLanguage(): String? = PreferenceManager.getDefaultSharedPreferences(this)
+        .getString(AUDIO_LANGUAGE_KEY, null)
+
+    private fun saveAudioLanguage(language: String?) {
+        if (language.isNullOrEmpty()) {
             return
         }
-        try {
-            history.saveStreamState(item.info, position * 1000).blockingAwait()
-        } catch (e: Exception) {
-            CastLog.w("Could not save the position: ${e.message}")
-        }
+        PreferenceManager.getDefaultSharedPreferences(this).edit()
+            .putString(AUDIO_LANGUAGE_KEY, language)
+            .apply()
     }
 
     /** Adds the video to the watch history, as if it was played in NewPipe. */
@@ -1090,28 +1018,27 @@ class CastService : Service() {
         private const val EXTRA_PLAY_NOW = "play_now"
         private const val EXTRA_POSITION = "position"
         private const val EXTRA_INDEX = "index"
+        private const val EXTRA_REQUEST = "request"
 
         private const val ERROR_TRANSITION_NOT_AVAILABLE = 701
         private const val PLAY_ATTEMPTS = 15
-        private const val STOP_WAIT_POLLS = 10
-        private const val STOP_WAIT_MILLIS = 300L
-        private const val STOPPED_POLLS_BEFORE_END = 3
-        private const val START_TIMEOUT_MILLIS = 25_000L
-        private const val STOPPED_GRACE_MILLIS = 5_000L
-        private const val FAILED_POLLS_BEFORE_ERROR = 8
-
-        // a TV that does not answer for 5 minutes is gone: the session ends
-        private const val FAILED_POLLS_BEFORE_END = 300
+        private const val FAILED_POLLS_BEFORE_ERROR = 3
         private const val MAX_RESUMES = 3
-        private const val STUCK_MILLIS = 30_000L
         private const val SAVE_EVERY_POLLS = 5
         private const val END_MARGIN_SECONDS = 15
         private const val VOLUME_STEP = 2
         private const val MAX_VOLUME = 100
+        private const val DEFAULT_MAX_HEIGHT = 1080
+        private const val POLL_SECONDS = 2L
+        private const val LIVE_MIME_TYPE = "video/mp2t"
+        private const val AUDIO_LANGUAGE_KEY = "cast_audio_language"
 
         @Volatile
         private var currentState = CastState()
         private val mutableState = MutableLiveData(CastState())
+
+        /** The latest seek requested by the controller; older queued ones are dropped. */
+        private val seekRequest = AtomicLong()
 
         /**
          * The videos handed to the service: a [StreamInfo] is too big for an [Intent], and the
@@ -1169,7 +1096,7 @@ class CastService : Service() {
             try {
                 val position = PlayerHolder.getInstance().pauseForCasting(item.info.serviceId, item.info.url)
                 if (position >= 0) {
-                    item.handOffSeconds = position / 1000
+                    item.startSeconds = position / 1000
                     CastLog.d("Continuing on the TV from the phone player at ${position / 1000}s")
                 }
             } catch (e: Exception) {
@@ -1188,7 +1115,7 @@ class CastService : Service() {
         private fun initialState(device: DlnaDevice, item: CastItem) = CastState(
             active = true,
             deviceName = device.friendlyName,
-            url = item.info.url.orEmpty(),
+            url = item.videoUrl,
             title = item.title,
             uploader = item.uploader,
             durationSeconds = item.durationSeconds,
@@ -1205,7 +1132,7 @@ class CastService : Service() {
 
         fun remove(context: Context, index: Int) = command(context, ACTION_REMOVE) { putExtra(EXTRA_INDEX, index) }
 
-        /** @param height the resolution, or 0 for automatic */
+        /** @param height the highest resolution wanted; the Lumia app has no "automatic" */
         fun setQuality(context: Context, height: Int) = command(context, ACTION_SET_QUALITY) { putExtra(EXTRA_INDEX, height) }
 
         fun setAudioTrack(context: Context, index: Int) = command(context, ACTION_SET_AUDIO_TRACK) { putExtra(EXTRA_INDEX, index) }
@@ -1217,8 +1144,19 @@ class CastService : Service() {
 
         fun volumeDown(context: Context) = command(context, ACTION_VOLUME_DOWN)
 
+        /**
+         * Asks for a seek. Only the last request made from the controller is executed: taps in
+         * a row add up without restarting the stream for each one (the Lumia `seekto` counter).
+         */
         fun seek(context: Context, positionSeconds: Long) {
-            command(context, ACTION_SEEK) { putExtra(EXTRA_POSITION, positionSeconds) }
+            if (positionSeconds < 0) {
+                return
+            }
+            val request = seekRequest.incrementAndGet()
+            command(context, ACTION_SEEK) {
+                putExtra(EXTRA_POSITION, positionSeconds)
+                putExtra(EXTRA_REQUEST, request)
+            }
         }
 
         private fun command(context: Context, action: String, extras: Intent.() -> Unit = {}) {
@@ -1227,5 +1165,16 @@ class CastService : Service() {
             }
             context.startService(Intent(context, CastService::class.java).setAction(action).apply(extras))
         }
+    }
+}
+
+/** The status text for the log, like `CastController::StatusText`. */
+private object CastControllerStatus {
+    fun text(state: TransportState): String = when (state) {
+        TransportState.PLAYING -> "Playing"
+        TransportState.PAUSED -> "Paused"
+        TransportState.TRANSITIONING -> "Buffering"
+        TransportState.STOPPED, TransportState.NO_MEDIA -> "Stopped"
+        else -> "Unknown"
     }
 }

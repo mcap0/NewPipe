@@ -5,6 +5,7 @@
 
 package org.schabi.newpipe.cast
 
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import okhttp3.OkHttpClient
@@ -39,18 +40,38 @@ class OkHttpUpstream(private val useRangeParameter: Boolean = false) : Upstream 
         .followRedirects(true)
         .build()
 
-    override fun open(url: String, range: HttpRange?): UpstreamResponse {
+    // a download of one segment gets a short timeout first, like the Lumia app: the timeouts
+    // are the ones of its 8 / 15 / 30 second retries
+    private val timeoutClients = ConcurrentHashMap<Int, OkHttpClient>()
+
+    override fun open(url: String, range: HttpRange?): UpstreamResponse = open(url, range, 0)
+
+    override fun open(url: String, range: HttpRange?, timeoutSeconds: Int): UpstreamResponse {
+        val client = clientFor(timeoutSeconds)
         val withRangeParameter = useRangeParameter && YoutubeRange.urlWithRange(url, range) != null
-        val response = request(url, range, withRangeParameter)
+        val response = request(client, url, range, withRangeParameter)
         if (response.code != 403 || !withRangeParameter) {
             return response
         }
         response.close()
         CastLog.w("HTTP 403 for range parameter ${range?.toHeaderValue()}, trying the Range header")
-        return request(url, range, withRangeParameter = false)
+        return request(client, url, range, withRangeParameter = false)
     }
 
-    private fun request(url: String, range: HttpRange?, withRangeParameter: Boolean): UpstreamResponse {
+    private fun clientFor(timeoutSeconds: Int): OkHttpClient = if (timeoutSeconds <= 0) {
+        client
+    } else {
+        timeoutClients.getOrPut(timeoutSeconds) {
+            client.newBuilder().readTimeout(timeoutSeconds.toLong(), TimeUnit.SECONDS).build()
+        }
+    }
+
+    private fun request(
+        client: OkHttpClient,
+        url: String,
+        range: HttpRange?,
+        withRangeParameter: Boolean
+    ): UpstreamResponse {
         val isVideoPlayback = url.contains("/videoplayback")
         val withRange = if (withRangeParameter) YoutubeRange.urlWithRange(url, range) else null
         val baseUrl = withRange ?: url

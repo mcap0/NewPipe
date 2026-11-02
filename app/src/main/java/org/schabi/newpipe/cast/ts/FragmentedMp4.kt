@@ -181,12 +181,19 @@ object FragmentedMp4 {
 
     /**
      * Reads the samples of the fragments that follow, one `moof` + `mdat` pair at a time.
+     *
+     * @param startDecodeTime decode time of the first sample, used for fragments without tfdt
+     * (a DASH segment read on its own, whose segment index says where it starts)
      */
-    class FragmentReader(input: InputStream, private val track: Mp4Track) {
+    class FragmentReader(
+        input: InputStream,
+        private val track: Mp4Track,
+        startDecodeTime: Long = 0
+    ) {
         private val input = DataInputStream(input)
 
         /** Decode time of the next sample, for fragments without tfdt. */
-        private var nextDecodeTime = 0L
+        private var nextDecodeTime = startDecodeTime
 
         /** @return the samples of the next fragment, or null at the end of the stream */
         fun nextFragment(): List<Mp4Sample>? {

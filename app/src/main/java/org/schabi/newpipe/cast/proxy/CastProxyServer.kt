@@ -22,8 +22,11 @@ import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import kotlin.math.roundToLong
 import org.schabi.newpipe.cast.dlna.CastDash
 import org.schabi.newpipe.cast.dlna.CastLog
+import org.schabi.newpipe.cast.dlna.SrtConverter
 import org.schabi.newpipe.cast.dlna.TsFormat
 import org.schabi.newpipe.cast.ts.LiveTsMuxer
 
@@ -54,6 +57,15 @@ fun interface Upstream {
      */
     @Throws(IOException::class)
     fun open(url: String, range: HttpRange?): UpstreamResponse
+
+    /**
+     * Like [open], with a per-request timeout. The Lumia app gives a stuck segment download 8,
+     * then 15, then 30 seconds, so that it cannot block the TV for half a minute.
+     *
+     * @param timeoutSeconds how long to wait for the answer, 0 for the default
+     */
+    @Throws(IOException::class)
+    fun open(url: String, range: HttpRange?, timeoutSeconds: Int): UpstreamResponse = open(url, range)
 }
 
 /**
@@ -86,8 +98,13 @@ class CastProxyServer(
         /** content kept in memory (subtitles), served instead of [url] */
         val bytes: ByteArray? = null,
         /** subtitles announced with the Samsung `CaptionInfo.sec` header */
-        val captionUrl: String? = null
+        val captionUrl: String? = null,
+        /** the stream whose segments the subtitles follow, to move them back on a seek */
+        val subtitleMuxer: LiveTsMuxer? = null
     )
+
+    /** The live MPEG-TS stream of a video, given to the TV by [CastProxyServer.startLive]. */
+    data class LiveStream(val url: String, val subtitleUrl: String?, val durationSeconds: Long)
 
     private val entries = ConcurrentHashMap<String, Entry>()
 
@@ -134,10 +151,18 @@ class CastProxyServer(
             // already closed
         }
         serverSocket = null
+        closeClients()
         executor?.shutdownNow()
         executor = null
+        val muxers = entries.values.flatMap { listOfNotNull(it.muxer, it.subtitleMuxer) }.toSet()
+        muxers.forEach { runCatching { it.close() } }
         entries.clear()
         CastLog.d("Proxy: stopped")
+    }
+
+    /** @param count how many downloaded segments to keep for each live stream */
+    fun setCacheLimit(count: Int) {
+        entries.values.mapNotNull { it.muxer }.toSet().forEach { it.setCacheLimit(count) }
     }
 
     /**
@@ -166,6 +191,26 @@ class CastProxyServer(
         "ts"
     )
 
+    /**
+     * Makes the video and audio streams of [tracks] available as a live MPEG-TS stream, with
+     * the subtitles [subtitleSrt] if not null, both accepting `?start=<seconds>`. The URLs of a
+     * new session start at the first segment, like the Lumia app's `/v.ts` and `/s.srt`.
+     *
+     * @return the URLs to give to the TV and the length of the video
+     */
+    fun startLive(
+        tracks: CastDash,
+        subtitleSrt: ByteArray? = null,
+        format: TsFormat = TsFormat.DEFAULT
+    ): LiveStream {
+        val muxer = LiveTsMuxer(dashUpstream, tracks)
+        val videoUrl = add(Entry(tracks.video.url, format.mimeType, muxer, format.dlnaFeatures), "ts")
+        val subtitleUrl = subtitleSrt?.let {
+            add(Entry("", SUBTITLE_MIME_TYPE, bytes = it, subtitleMuxer = muxer), "srt")
+        }
+        return LiveStream(videoUrl, subtitleUrl, muxer.durationSeconds)
+    }
+
     private fun add(entry: Entry, extension: String = extensionFor(entry.mimeType)): String {
         val token = ByteArray(12).also { random.nextBytes(it) }
             .joinToString("") { "%02x".format(Locale.US, it) }
@@ -182,7 +227,12 @@ class CastProxyServer(
         while (!socket.isClosed) {
             try {
                 val client = socket.accept()
-                pool.execute { handleClient(client) }
+                try {
+                    pool.execute { handleClient(client) }
+                } catch (e: RejectedExecutionException) {
+                    // stop() happened between accept() and now
+                    runCatching { client.close() }
+                }
             } catch (e: SocketException) {
                 if (!socket.isClosed) {
                     CastLog.e("Proxy: accept failed", e)
@@ -209,11 +259,18 @@ class CastProxyServer(
     }
 
     private fun handleClient(client: Socket) {
-        clients.add(client)
+        synchronized(this) {
+            if (serverSocket?.isClosed != false) {
+                // accepted while stop() was closing the server: do not leave a connection open
+                runCatching { client.close() }
+                return
+            }
+            clients.add(client)
+        }
         try {
             serveClient(client)
         } finally {
-            clients.remove(client)
+            synchronized(this) { clients.remove(client) }
         }
     }
 
@@ -255,12 +312,14 @@ class CastProxyServer(
             handleMux(request, entry, it, output)
             return
         }
-        entry.bytes?.let {
-            writeHeaders(output, 200, "OK", entry.mimeType, it.size.toLong(), null)
-            if (request.method == "GET") {
-                output.write(it)
-            }
-            output.flush()
+        entry.bytes?.let { bytes ->
+            val body = entry.subtitleMuxer?.let { muxer ->
+                // the TV's clock starts at 0 with the first segment of /v.ts?start=: the cues
+                // move back by that segment's start, like StreamServer::BuildSubtitle
+                val offset = (muxer.segmentStartSeconds(startSeconds(request.path)) * 1000).roundToLong()
+                SrtConverter.shift(String(bytes, Charsets.UTF_8), offset).toByteArray(Charsets.UTF_8)
+            } ?: bytes
+            writeContent(output, entry.mimeType, body, request.method == "HEAD")
             return
         }
 
@@ -330,7 +389,7 @@ class CastProxyServer(
     /**
      * Sends the live MPEG-TS stream. Its length is unknown, so it is sent until the end without
      * Content-Length, and byte ranges other than "from the start" cannot be served: the TV seeks
-     * by asking for a new stream with `?t=<seconds>`.
+     * by asking for a new stream with `?start=<seconds>`.
      */
     private fun handleMux(request: HttpRequest, entry: Entry, muxer: LiveTsMuxer, output: OutputStream) {
         val range = runCatching { HttpRange.parse(request.header("Range")) }.getOrNull()
@@ -363,9 +422,26 @@ class CastProxyServer(
             "contentFeatures.dlna.org: $dlnaFeatures\r\n" +
             "Server: $SERVER\r\n" +
             "Connection: close\r\n" +
+            "Cache-Control: no-store\r\n" +
             "\r\n"
         CastLog.d("Proxy -> 200 OK, live stream $contentType")
         output.write(headers.toByteArray(StandardCharsets.ISO_8859_1))
+    }
+
+    /** Subtitles and other content kept in memory, like the Lumia app's `/s.srt`. */
+    private fun writeContent(output: OutputStream, contentType: String, body: ByteArray, isHead: Boolean) {
+        val headers = "HTTP/1.1 200 OK\r\n" +
+            "Content-Type: $contentType\r\n" +
+            "Content-Length: ${body.size}\r\n" +
+            "Connection: close\r\n" +
+            "Cache-Control: no-store\r\n" +
+            "\r\n"
+        CastLog.d("Proxy -> 200 OK, $contentType, length ${body.size}")
+        output.write(headers.toByteArray(StandardCharsets.ISO_8859_1))
+        if (!isHead) {
+            output.write(body)
+        }
+        output.flush()
     }
 
     private fun writeHeaders(
@@ -426,16 +502,17 @@ class CastProxyServer(
         private const val CLIENT_TIMEOUT_MILLIS = 30_000
         private const val BUFFER_SIZE = 64 * 1024
         private const val SERVER = "Android UPnP/1.0 NewPipe-Cast/1.0"
+        private const val SUBTITLE_MIME_TYPE = "application/x-srt"
 
         /** DLNA.ORG_OP=01: seeking by byte range is supported; FLAGS: streaming transfer mode. */
         const val DLNA_CONTENT_FEATURES =
             "DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
 
-        /** @return the start time asked with `?t=<seconds>`, 0 if absent */
+        /** @return the start time asked with `?start=<seconds>`, 0 if absent */
         fun startSeconds(path: String): Double = path.substringAfter('?', "")
             .split('&')
-            .firstOrNull { it.startsWith("t=") }
-            ?.removePrefix("t=")
+            .firstOrNull { it.startsWith("start=") }
+            ?.removePrefix("start=")
             ?.toDoubleOrNull()
             ?.coerceAtLeast(0.0)
             ?: 0.0

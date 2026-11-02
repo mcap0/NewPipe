@@ -25,7 +25,7 @@
     <string name="cast_status_error">Error</string>
 
     <string name="cast_error_no_wifi">The phone is not connected to a Wi-Fi network</string>
-    <string name="cast_error_no_stream">This video has no stream that can be cast (an MP4 with audio up to 720p, or H.264 video and AAC audio streams, are needed)</string>
+    <string name="cast_error_no_stream">This video has no stream that can be cast (H.264 video and AAC audio streams up to 1080p, or an MP4 with audio, are needed)</string>
     <string name="cast_error_tv">The TV refused the request: %1$s</string>
     <string name="cast_error_live_refused">The TV refused the live MPEG-TS stream: %1$s</string>
     <string name="cast_error_unreachable">The TV cannot be reached</string>
@@ -50,13 +50,10 @@
     <string name="cast_next">Next</string>
     <string name="cast_queue">Queue</string>
     <string name="cast_quality">Quality</string>
-    <string name="cast_quality_auto">Auto</string>
-    <string name="cast_quality_auto_current">Auto (%1$s)</string>
     <string name="cast_subtitles">Subtitles</string>
     <string name="cast_subtitles_off">Subtitles off</string>
     <string name="cast_subtitles_hint">If the subtitles do not appear, turn them on in the subtitle settings of the TV</string>
-    <string name="cast_quality_fallback">The TV could not play %1$s, now playing %2$s</string>
-    <string name="cast_error_cannot_play">The TV could not play this video at any quality</string>
+    <string name="cast_error_cannot_play">The TV could not play this video</string>
     <string name="cast_last_used">%1$s · last used</string>
     <string name="cast_error_tv_busy">The TV is busy or switched off: turn it on, close what it is showing and try again</string>
     <string name="cast_sent_to_tv">Playing on %1$s</string>

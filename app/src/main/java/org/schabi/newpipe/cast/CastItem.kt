@@ -26,23 +26,26 @@ import org.schabi.newpipe.util.Localization
  * A video of the cast queue, with the qualities, audio tracks and subtitles that can be chosen
  * for it.
  */
-class CastItem(val info: StreamInfo) {
+class CastItem(val info: StreamInfo) : CastQueueItem {
     val title: String = info.name.orEmpty()
     val uploader: String = info.uploaderName.orEmpty()
-    val durationSeconds: Long = info.duration
+    override val videoUrl: String = info.url.orEmpty()
+    override var durationSeconds: Long = info.duration
 
     /**
-     * Where the phone player was when the video was sent to the TV, null if it was not playing
-     * it. Used once, instead of the position saved in the history.
+     * Where to start when this video is played: the phone player's position when it was sent
+     * to the TV, or -1 to use the position saved in the history. Used once, then reset to -1.
      */
     @Volatile
-    var handOffSeconds: Long? = null
+    var startSeconds: Long = -1
 
-    /**
-     * A lower resolution chosen automatically because the TV could not play a higher one,
-     * null if none. It wins over the resolution wanted by the user for this video.
-     */
-    var fallbackHeight: Int? = null
+    /** The audio track chosen for this video, null for the original one. */
+    @Volatile
+    var audioTrackId: String? = null
+
+    /** The language of [audioTrackId], kept for the next videos like the Lumia app's `audioLang`. */
+    @Volatile
+    var audioLanguage: String? = null
 
     private val progressive = info.videoStreams.map { toCandidate(it) }
     private val videoOnly = info.videoOnlyStreams.map { toCandidate(it) }
@@ -95,6 +98,25 @@ class CastItem(val info: StreamInfo) {
     fun audioTrackName(context: Context, trackId: String): String {
         val stream = info.audioStreams.firstOrNull { it.audioTrackId == trackId } ?: return trackId
         return Localization.audioTrackName(context, stream)
+    }
+
+    /** @return the language of [trackId], or null if it is unknown or the track is gone */
+    fun audioLanguageOf(trackId: String?): String? = info.audioStreams
+        .firstOrNull { trackId != null && it.audioTrackId == trackId }
+        ?.audioLocale
+        ?.language
+
+    /** @return a track in [language], preferring the original one, or null if there is none */
+    fun audioTrackForLanguage(language: String?): String? {
+        if (language.isNullOrEmpty()) {
+            return null
+        }
+        val candidates = info.audioStreams.filter {
+            it.audioTrackId != null && it.audioLocale?.language.equals(language, ignoreCase = true)
+        }
+        return candidates.firstOrNull { it.audioTrackType == null || it.audioTrackType == AudioTrackType.ORIGINAL }
+            ?.audioTrackId
+            ?: candidates.firstOrNull()?.audioTrackId
     }
 
     fun subtitleName(context: Context, subtitles: SubtitlesStream): String = PlayerHelper.captionLanguageOf(context, subtitles)

@@ -22,7 +22,7 @@
     <string name="cast_status_error">Errore</string>
 
     <string name="cast_error_no_wifi">Il telefono non è connesso a una rete Wi-Fi</string>
-    <string name="cast_error_no_stream">Questo video non ha uno stream trasmissibile (serve un MP4 con audio fino a 720p, oppure stream video H.264 e audio AAC)</string>
+    <string name="cast_error_no_stream">Questo video non ha uno stream trasmissibile (servono stream video H.264 e audio AAC fino a 1080p, oppure un MP4 con audio)</string>
     <string name="cast_error_tv">Il TV ha rifiutato la richiesta: %1$s</string>
     <string name="cast_error_live_refused">Il TV ha rifiutato lo stream MPEG-TS in diretta: %1$s</string>
     <string name="cast_error_unreachable">Il TV non è raggiungibile</string>
@@ -45,13 +45,10 @@
     <string name="cast_next">Successivo</string>
     <string name="cast_queue">Coda</string>
     <string name="cast_quality">Qualità</string>
-    <string name="cast_quality_auto">Automatica</string>
-    <string name="cast_quality_auto_current">Automatica (%1$s)</string>
     <string name="cast_subtitles">Sottotitoli</string>
     <string name="cast_subtitles_off">Sottotitoli disattivati</string>
     <string name="cast_subtitles_hint">Se i sottotitoli non compaiono, attivali nelle impostazioni dei sottotitoli del TV</string>
-    <string name="cast_quality_fallback">Il TV non riusciva a riprodurre %1$s, ora in %2$s</string>
-    <string name="cast_error_cannot_play">Il TV non riesce a riprodurre questo video in nessuna qualità</string>
+    <string name="cast_error_cannot_play">Il TV non riesce a riprodurre questo video</string>
     <string name="cast_last_used">%1$s · usato l\'ultima volta</string>
     <string name="cast_error_tv_busy">Il TV è occupato o spento: accendilo, chiudi quello che sta mostrando e riprova</string>
     <string name="cast_sent_to_tv">In riproduzione su %1$s</string>

@@ -208,8 +208,8 @@ class CastProxyServerTest {
     @Test
     fun parsesStartTime() {
         assertEquals(0.0, CastProxyServer.startSeconds("/v/abc.ts"), 0.0)
-        assertEquals(125.0, CastProxyServer.startSeconds("/v/abc.ts?t=125"), 0.0)
-        assertEquals(0.0, CastProxyServer.startSeconds("/v/abc.ts?t=-4"), 0.0)
+        assertEquals(125.0, CastProxyServer.startSeconds("/v/abc.ts?start=125"), 0.0)
+        assertEquals(0.0, CastProxyServer.startSeconds("/v/abc.ts?start=-4"), 0.0)
     }
 
     @Test

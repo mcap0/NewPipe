@@ -7,8 +7,6 @@ package org.schabi.newpipe.cast
 
 import android.graphics.Typeface
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.view.MenuItem
 import android.view.View
 import android.widget.SeekBar
@@ -35,14 +33,9 @@ class CastControllerActivity : AppCompatActivity() {
     private var shownQueue: Pair<List<CastQueueEntry>, Int>? = null
     private var state = CastState()
 
-    // −30 / +30: taps in a row add up on the position shown, only the last one seeks (the TV
-    // restarts its stream on every seek of a live MPEG-TS cast)
+    // −30 / +30: taps in a row add up on the position shown, only the last one restarts the
+    // stream (the service keeps the request number of the latest seek)
     private var skipTarget: Long? = null
-    private val skipHandler = Handler(Looper.getMainLooper())
-    private val skipRunnable = Runnable {
-        skipTarget?.let { CastService.seek(this, it) }
-        skipTarget = null
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         ThemeHelper.setTheme(this)
@@ -100,17 +93,8 @@ class CastControllerActivity : AppCompatActivity() {
         skipTarget = target
         binding.castSeekBar.progress = target.toInt()
         binding.castPosition.text = Localization.getDurationString(target)
-        skipHandler.removeCallbacks(skipRunnable)
-        skipHandler.postDelayed(skipRunnable, SKIP_DELAY_MILLIS)
-    }
-
-    override fun onDestroy() {
-        // a skip still waiting is not lost when the screen closes
-        if (skipTarget != null) {
-            skipHandler.removeCallbacks(skipRunnable)
-            skipRunnable.run()
-        }
-        super.onDestroy()
+        // like the Lumia app's seekto: every tap is sent at once, the service only runs the last
+        CastService.seek(this, target)
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
@@ -123,6 +107,10 @@ class CastControllerActivity : AppCompatActivity() {
 
     private fun render(state: CastState) {
         this.state = state
+        val pendingSkip = skipTarget
+        if (pendingSkip != null && state.positionSeconds in (pendingSkip - 1)..(pendingSkip + 1)) {
+            skipTarget = null
+        }
         if (!state.active && state.error == null) {
             // no session (anymore): nothing to control
             finish()
@@ -182,11 +170,7 @@ class CastControllerActivity : AppCompatActivity() {
 
     private fun qualityText(state: CastState): String {
         val current = state.quality.takeIf { it > 0 }?.let { "${it}p" }
-        return when {
-            !state.autoQuality && current != null -> current
-            current != null -> getString(R.string.cast_quality_auto_current, current)
-            else -> getString(R.string.cast_quality_auto)
-        }
+        return current ?: getString(R.string.cast_quality)
     }
 
     private fun renderQueue(state: CastState) {
@@ -224,12 +208,15 @@ class CastControllerActivity : AppCompatActivity() {
 
     private fun chooseQuality() {
         val qualities = state.qualities
-        val names = arrayOf(getString(R.string.cast_quality_auto)) + qualities.map { "${it}p" }
-        val checked = if (state.autoQuality) 0 else qualities.indexOf(state.quality) + 1
+        if (qualities.isEmpty()) {
+            return
+        }
+        val names = qualities.map { "${it}p" }.toTypedArray()
+        val checked = qualities.indexOf(state.quality).coerceAtLeast(0)
         AlertDialog.Builder(this)
             .setTitle(R.string.cast_quality)
             .setSingleChoiceItems(names, checked) { dialog, which ->
-                CastService.setQuality(this, if (which == 0) 0 else qualities[which - 1])
+                CastService.setQuality(this, qualities[which])
                 dialog.dismiss()
             }
             .setNegativeButton(R.string.cancel, null)
@@ -266,6 +253,5 @@ class CastControllerActivity : AppCompatActivity() {
         private const val DISABLED_ALPHA = 0.3f
         private const val SKIP_SECONDS = 30L
         private const val SKIP_END_MARGIN = 5L
-        private const val SKIP_DELAY_MILLIS = 700L
     }
 }

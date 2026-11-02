@@ -14,15 +14,31 @@ class CastStreamSelectorTest {
         height: Int,
         mime: String? = "video/mp4",
         videoOnly: Boolean = false,
-        progressive: Boolean = true
-    ) = CastStreamCandidate("https://h/$height-$mime-$videoOnly-$progressive", mime, height, videoOnly, progressive)
+        progressive: Boolean = true,
+        bitrate: Int = 1000
+    ) = CastStreamCandidate(
+        "https://h/$height-$mime-$videoOnly-$progressive-$bitrate",
+        mime,
+        height,
+        videoOnly,
+        progressive,
+        bitrate = bitrate
+    )
 
     @Test
-    fun choosesHighestProgressiveMp4UpTo720p() {
+    fun choosesHighestProgressiveMp4UpTo1080p() {
         val chosen = CastStreamSelector.select(
-            listOf(stream(360), stream(720), stream(480), stream(1080, videoOnly = true))
+            listOf(stream(360), stream(720), stream(1080), stream(1440), stream(2160))
         )
-        assertEquals(720, chosen!!.height)
+        assertEquals(1080, chosen!!.height)
+    }
+
+    @Test
+    fun progressivePrefersTheLowestBitrateAtTheSameHeight() {
+        val chosen = CastStreamSelector.select(
+            listOf(stream(720, bitrate = 2_000_000), stream(720, bitrate = 1_000_000))
+        )
+        assertEquals(1_000_000, chosen!!.bitrate)
     }
 
     @Test
@@ -39,8 +55,8 @@ class CastStreamSelectorTest {
     }
 
     @Test
-    fun ignoresResolutionsAbove720p() {
-        assertNull(CastStreamSelector.select(listOf(stream(1080), stream(1440))))
+    fun ignoresResolutionsAbove1080p() {
+        assertNull(CastStreamSelector.select(listOf(stream(1440), stream(2160))))
     }
 
     @Test
@@ -49,8 +65,13 @@ class CastStreamSelectorTest {
         assertNull(CastStreamSelector.select(listOf(stream(360, mime = null))))
     }
 
-    private fun videoOnly(height: Int, codec: String = "avc1.640028", ranges: Boolean = true, bitrate: Int = 1000) = CastStreamCandidate(
-        url = "https://h/v$height-$codec",
+    private fun videoOnly(
+        height: Int,
+        codec: String = "avc1.640028",
+        ranges: Boolean = true,
+        bitrate: Int = 1000
+    ) = CastStreamCandidate(
+        url = "https://h/v$height-$codec-$bitrate",
         mimeType = "video/mp4",
         height = height,
         isVideoOnly = true,
@@ -90,6 +111,15 @@ class CastStreamSelectorTest {
         assertEquals("avc1.640028", dash.video.codecs)
         assertEquals(0L, dash.video.initStart)
         assertEquals(1500L, dash.video.indexEnd)
+    }
+
+    @Test
+    fun dashPrefersTheLowestBitrateAtTheSameHeight() {
+        val dash = CastStreamSelector.selectDash(
+            listOf(videoOnly(720, bitrate = 2_000_000), videoOnly(720, bitrate = 1_000_000)),
+            listOf(audio())
+        )!!
+        assertEquals(1_000_000, dash.video.bandwidth)
     }
 
     @Test
@@ -133,9 +163,9 @@ class CastStreamSelectorTest {
     }
 
     @Test
-    fun listsQualitiesOfProgressiveAndMuxedStreams() {
+    fun listsQualitiesOfMuxedStreams() {
         assertEquals(
-            listOf(1080, 720, 480, 360),
+            listOf(1080, 720, 480),
             CastStreamSelector.qualities(
                 listOf(stream(360), stream(720), stream(1080)),
                 listOf(videoOnly(1080), videoOnly(720), videoOnly(480), videoOnly(1440), videoOnly(720, "vp09.00.40.08"))
@@ -144,19 +174,39 @@ class CastStreamSelectorTest {
     }
 
     @Test
-    fun autoQualityPrefersProgressive() {
-        val choice = CastStreamSelector.choose(listOf(stream(360)), listOf(videoOnly(1080)), listOf(audio()))!!
-        assertEquals(360, choice.single!!.height)
-        assertNull(choice.dash)
+    fun listsProgressiveQualitiesWithoutMuxedStreams() {
+        assertEquals(
+            listOf(720, 360),
+            CastStreamSelector.qualities(listOf(stream(360), stream(720)), emptyList())
+        )
     }
 
     @Test
-    fun chosenQualityUsesMuxedStreamsWhenNeeded() {
+    fun choosesMuxedStreamsEvenWhenAProgressiveOneExists() {
+        val choice = CastStreamSelector.choose(listOf(stream(360)), listOf(videoOnly(1080)), listOf(audio()))!!
+        assertNull(choice.single)
+        assertEquals(1080, choice.dash!!.video.height)
+    }
+
+    @Test
+    fun chosenQualityUsesMuxedStreams() {
         val progressive = listOf(stream(360))
         val videos = listOf(videoOnly(480), videoOnly(720), videoOnly(1080))
-        assertEquals(360, CastStreamSelector.choose(progressive, videos, listOf(audio()), height = 360)!!.single!!.height)
-        val dash = CastStreamSelector.choose(progressive, videos, listOf(audio()), height = 720)!!.dash!!
-        assertEquals(720, dash.video.height)
+        // below the lowest muxed height: the lowest one, like the Lumia app's fallback
+        assertEquals(480, CastStreamSelector.choose(progressive, videos, listOf(audio()), height = 360)!!.dash!!.video.height)
+        assertEquals(720, CastStreamSelector.choose(progressive, videos, listOf(audio()), height = 720)!!.dash!!.video.height)
+    }
+
+    @Test
+    fun progressiveIsOnlyAFallbackWithoutMuxedStreams() {
+        val choice = CastStreamSelector.choose(
+            listOf(stream(720)),
+            listOf(videoOnly(720, "av01.0.08M.08")),
+            listOf(audio(codec = "opus", mime = "audio/webm")),
+            height = 720
+        )!!
+        assertEquals(720, choice.single!!.height)
+        assertNull(choice.dash)
     }
 
     @Test
@@ -168,7 +218,7 @@ class CastStreamSelectorTest {
         assertEquals("https://h/a-mp4a.40.2-128000-false-it.3", dubbed.dash!!.audio.url)
 
         val original = CastStreamSelector.choose(listOf(stream(360)), listOf(videoOnly(720)), audios, audioTrackId = "en.4")!!
-        assertEquals(360, original.single!!.height)
+        assertEquals("https://h/a-mp4a.40.2-128000-true-en.4", original.dash!!.audio.url)
     }
 
     @Test
